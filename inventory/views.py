@@ -33,6 +33,7 @@ from catalog.models import Warehouse
 from catalog.services import PriceNotSet
 
 from . import reports, services
+from .filters import InventoryAdjustmentFilter, WarehouseTransferFilter
 from .models import (
     InventoryAdjustment,
     ReasonCode,
@@ -257,7 +258,7 @@ class WarehouseTransferViewSet(viewsets.ModelViewSet):
     """
 
     permission_classes = [*AUTHENTICATED, CanMoveStockBetweenWarehouses]
-    filterset_fields = ("from_warehouse", "to_warehouse", "posted_at")
+    filterset_class = WarehouseTransferFilter
     # Never deleted: an unposted transfer still records that someone intended
     # to move stock, and a posted one is the source of ledger rows.
     http_method_names = ["get", "post", "patch", "head", "options"]
@@ -375,7 +376,7 @@ class InventoryAdjustmentViewSet(viewsets.ModelViewSet):
     """
 
     permission_classes = [*AUTHENTICATED, CanAdjustInventory]
-    filterset_fields = ("warehouse", "sku", "reason_code", "posted_at")
+    filterset_class = InventoryAdjustmentFilter
     http_method_names = ["get", "post", "patch", "head", "options"]
 
     def get_queryset(self):

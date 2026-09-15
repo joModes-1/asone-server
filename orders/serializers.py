@@ -264,6 +264,13 @@ class SchoolOrderSerializer(serializers.ModelSerializer):
     lines = SchoolOrderLineSerializer(many=True, read_only=True)
     school_name = serializers.CharField(source="school.name", read_only=True)
     warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+    # Null unless the order was transferred — F45. `warehouse_name` above
+    # already says who is filling it, but not *why* it is not the school's own
+    # warehouse, and that is the thing a reader needs explaining when a
+    # Namayemba school's order is being packed at Serere.
+    transferred_to_name = serializers.CharField(
+        source="fulfilled_by_warehouse.name", read_only=True, default=None
+    )
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     created_by_name = serializers.CharField(
         source="created_by.get_full_name", read_only=True
@@ -278,6 +285,7 @@ class SchoolOrderSerializer(serializers.ModelSerializer):
             "school",
             "school_name",
             "warehouse_name",
+            "transferred_to_name",
             "student_name",
             "order_date",
             "status",
@@ -368,6 +376,18 @@ class BackorderSerializer(serializers.ModelSerializer):
     """What a school is still owed — F44."""
 
     order_number = serializers.CharField(source="order.number", read_only=True)
+    # The warehouse's own picking hint, carried through from the order so the
+    # exceptions queue can be worked most-urgent-first like the backlog.
+    priority = serializers.CharField(source="order.priority", read_only=True)
+    priority_display = serializers.CharField(
+        source="order.get_priority_display", read_only=True
+    )
+    # Free stock for this SKU **anywhere**, and the best single warehouse.
+    # Anywhere, because decision D2 lets another warehouse ship direct — a
+    # backorder is fillable if the goods exist somewhere, not only at the
+    # school's own site.
+    available = serializers.SerializerMethodField()
+    fillable_at = serializers.SerializerMethodField()
     school_name = serializers.CharField(source="order.school.name", read_only=True)
     student_name = serializers.CharField(source="order.student_name", read_only=True)
     sku_number = serializers.CharField(source="sku.number", read_only=True)
@@ -378,6 +398,40 @@ class BackorderSerializer(serializers.ModelSerializer):
         read_only=True,
         help_text="The warehouse that ran short.",
     )
+    def _stock(self, backorder):
+        """Free stock for this SKU, per warehouse, best first.
+
+        Cached on the instance because both computed fields want it and a
+        list of thirty backorders should not ask twice per row.
+        """
+        cached = getattr(backorder, "_free_stock", None)
+        if cached is None:
+            from inventory.services import stock_levels
+
+            cached = sorted(
+                (
+                    (row["warehouse__name"], row["level"])
+                    for row in stock_levels()
+                    if row["sku_id"] == backorder.sku_id and row["level"] > 0
+                ),
+                key=lambda pair: -pair[1],
+            )
+            backorder._free_stock = cached
+        return cached
+
+    def get_available(self, backorder) -> int:
+        """Units on hand anywhere. Zero means nobody can fill it yet."""
+        return sum(level for _, level in self._stock(backorder))
+
+    def get_fillable_at(self, backorder) -> str | None:
+        """The warehouse holding the most of it, or None.
+
+        Named rather than just counted, because the clerk's next question
+        after "can this go?" is "from where?".
+        """
+        rows = self._stock(backorder)
+        return rows[0][0] if rows else None
+
     filled_by_warehouse_name = serializers.CharField(
         source="filled_by_warehouse.name", read_only=True, default=None
     )
@@ -388,6 +442,10 @@ class BackorderSerializer(serializers.ModelSerializer):
             "id", "order", "order_number", "school_name", "student_name",
             "sku", "sku_number", "sku_description", "quantity",
             "status", "status_display",
+            "priority",
+            "priority_display",
+            "available",
+            "fillable_at",
             "origin_warehouse_name",
             "filled_by_warehouse", "filled_by_warehouse_name",
             "assigned_at", "created_at", "notes",
@@ -401,6 +459,32 @@ class AssignBackorderSerializer(serializers.Serializer):
     warehouse = serializers.PrimaryKeyRelatedField(
         queryset=Warehouse.objects.all(),
         help_text="A warehouse holding enough to fill it — never the one that ran short.",
+    )
+
+
+class TransferOrderSerializer(serializers.Serializer):
+    """Moving a whole held order to a warehouse with stock — F45.
+
+    The whole-order counterpart to AssignBackorderSerializer. Which of the
+    two is the live path depends on how AsOne answer part-shipping: under
+    the pack's hold-complete rule (p.8) an order short of stock is held
+    entire, so there are no per-SKU rows to assign and the order itself is
+    what moves.
+    """
+
+    warehouse = serializers.PrimaryKeyRelatedField(
+        queryset=Warehouse.objects.all(),
+        help_text=(
+            "A warehouse holding enough of every line to finish the order. "
+            "Get the list from `transfer-candidates/`."
+        ),
+    )
+    reason = serializers.CharField(
+        max_length=200,
+        required=False,
+        allow_blank=True,
+        default="",
+        help_text="Why it moved. A transfer is somebody's judgement, so it is worth recording who decided and why.",
     )
 
 
@@ -524,8 +608,12 @@ class PickingQueueRowSerializer(serializers.ModelSerializer):
     """An order waiting to be picked — the backlog row."""
 
     school_name = serializers.CharField(source="school.name", read_only=True)
-    warehouse_name = serializers.CharField(
-        source="school.primary_warehouse.name", read_only=True
+    # `warehouse`, not `school.primary_warehouse`. After an F45 transfer they
+    # are different warehouses, and the one that matters on a picking backlog
+    # is the one that has to pick it.
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+    transferred_to_name = serializers.CharField(
+        source="fulfilled_by_warehouse.name", read_only=True, default=None
     )
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     priority_display = serializers.CharField(
@@ -542,6 +630,7 @@ class PickingQueueRowSerializer(serializers.ModelSerializer):
             "school",
             "school_name",
             "warehouse_name",
+            "transferred_to_name",
             "student_name",
             "order_date",
             "status",
@@ -594,3 +683,13 @@ class PickingQueueSerializer(serializers.Serializer):
 
     summary = PickingSummarySerializer()
     orders = PaginatedPickingQueueSerializer()
+
+
+class ReleaseEligibleSerializer(serializers.Serializer):
+    """Releasing every backorder that can go — the bulk action."""
+
+    backorders = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        help_text="Which to release. Omit to release everything eligible.",
+    )

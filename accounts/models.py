@@ -139,8 +139,20 @@ class User(AbstractUser):
         if errors:
             raise ValidationError(errors)
 
+    @property
+    def display_name(self) -> str:
+        """What to print where a person is named.
+
+        Falls back to the email, because `get_full_name()` returns an empty
+        string for an account created without one — and a blank "Raised by"
+        column on an audit trail is worse than an ugly one. AsOne asked for
+        user names captured on transactions and available in audit trails
+        (p.9); a blank cell does not satisfy that.
+        """
+        return self.get_full_name() or self.email
+
     def __str__(self):
-        return f"{self.get_full_name() or self.email} ({self.get_role_display()})"
+        return f"{self.display_name} ({self.get_role_display()})"
 
 
 class LoginAttempt(models.Model):

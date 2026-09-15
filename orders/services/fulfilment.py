@@ -61,18 +61,22 @@ class OrderCannotBePicked(Exception):
 REQUIRE_RELEASE_BEFORE_PICK = False
 
 
-def check_availability(order):
+def check_availability(order, warehouse=None):
     """F37 — can the warehouse actually fill this order right now.
 
     One row per SKU: how many the order needs, how many are AVAILABLE at
-    the order's warehouse, and the shortfall (0 when there is enough).
+    the warehouse, and the shortfall (0 when there is enough).
 
     pick_order() refuses using this exact comparison, so "can this be
     filled" (F37) and "fill it" (F39) can never disagree.
+
+    ``warehouse`` asks the same question of a warehouse that is not the
+    order's own — what F45 needs to answer "could Serere fill this?" before
+    offering the transfer. It changes nothing about the order.
     """
     from inventory.services import stock_level
 
-    warehouse = order.warehouse
+    warehouse = warehouse or order.warehouse
     rows = []
     for sku, needed in order_demand(order):
         available = stock_level(sku, warehouse)

@@ -27,7 +27,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
         source="get_movement_type_display", read_only=True
     )
     created_by_name = serializers.CharField(
-        source="created_by.get_full_name", read_only=True
+        source="created_by.display_name", read_only=True
     )
     total_value = serializers.DecimalField(
         max_digits=16, decimal_places=2, read_only=True
@@ -72,9 +72,16 @@ class StockLevelSerializer(serializers.Serializer):
     sku_description = serializers.CharField(source="sku__description")
     warehouse_id = serializers.IntegerField()
     warehouse_name = serializers.CharField(source="warehouse__name")
-    level = serializers.IntegerField(help_text="Units on hand.")
+    level = serializers.IntegerField(help_text="Units available to pick.")
+    reserved = serializers.IntegerField(
+        help_text=(
+            "Units set aside for an order that has not shipped. Still "
+            "physically on the shelf, so a physical count sees level + "
+            "reserved, not level."
+        )
+    )
     value = serializers.DecimalField(
-        max_digits=16, decimal_places=2, help_text="Value of that stock."
+        max_digits=16, decimal_places=2, help_text="Value of the available stock."
     )
 
 
@@ -140,7 +147,7 @@ class WarehouseTransferSerializer(serializers.ModelSerializer):
     reason_code_name = serializers.CharField(
         source="reason_code.name", read_only=True, default=None
     )
-    created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True)
+    created_by_name = serializers.CharField(source="created_by.display_name", read_only=True)
     is_posted = serializers.BooleanField(read_only=True)
 
     class Meta:
@@ -217,7 +224,7 @@ class InventoryAdjustmentSerializer(serializers.ModelSerializer):
     sku_description = serializers.CharField(source="sku.description", read_only=True)
     reason_code_code = serializers.CharField(source="reason_code.code", read_only=True)
     reason_code_name = serializers.CharField(source="reason_code.name", read_only=True)
-    created_by_name = serializers.CharField(source="created_by.get_full_name", read_only=True)
+    created_by_name = serializers.CharField(source="created_by.display_name", read_only=True)
     is_posted = serializers.BooleanField(read_only=True)
 
     class Meta:

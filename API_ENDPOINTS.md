@@ -1,14 +1,44 @@
 # API Endpoints
 
-Every endpoint below belongs to a feature marked **complete**. Endpoints that
-exist but whose feature is still partial are listed at the bottom, separately,
-so nothing here is mistaken for finished work.
-
-Completed features covered: **F01, F02, F03, F05, F06, F07, F08, F10, F11,
-F12, F14, F15**.
+**128 operations across 5 apps**, verified against the live OpenAPI schema
+(`/api/schema/`) in both directions: every path read from `urls.py`/`views.py`
+appears in the generated schema, and every schema path is accounted for here.
+Nothing is estimated or sampled — this is a complete list.
 
 Live, always-current version of this: **`/api/docs/`** — generated from the
-code, so it cannot go stale the way this file can.
+code, so it cannot go stale the way this file can. Re-verify against it
+(or `/api/schema/`) before trusting this file for anything load-bearing;
+it reflects the codebase as reviewed, not a live feed.
+
+| App | Operations |
+|---|---:|
+| `accounts` (`/api/auth/`) | 18 |
+| `catalog` (`/api/catalog/`) | 62 |
+| `inventory` (`/api/inventory/`) | 19 |
+| `orders` (`/api/orders/`) | 11 |
+| `procurement` (`/api/procurement/`) | 18 |
+
+Plus 3 utility paths outside these counts (`/api/`, `/api/schema/`,
+`/api/docs/`) and the Django admin at `/admin/`.
+
+---
+
+## Roles
+
+| Short | Role |
+|---|---|
+| **PL** | Program Lead |
+| **OM** | Operations Manager |
+| **WH** | Warehouse Staff |
+| **SCH** | School Staff |
+| **FIN** | Finance Department |
+
+"Leads" means PL and OM together — they have identical access almost
+everywhere in this API. Where a table says an entry is scoped ("own
+warehouse", "own school"), that scoping happens at the *queryset* level, not
+just the permission check: the role passes the gate but only sees its own
+rows, and a cross-site `{id}` typically 404s rather than 403s so existence
+isn't leaked.
 
 ---
 
@@ -16,7 +46,8 @@ code, so it cannot go stale the way this file can.
 
 **Base URL** — `http://127.0.0.1:8000` in development.
 
-**Authentication** — every endpoint except sign-in requires a bearer token:
+**Authentication** — every endpoint except `login`/`refresh`/`verify`
+requires a bearer token:
 
 ```
 Authorization: Bearer <access_token>
@@ -38,8 +69,16 @@ correct behaviour, not a bug.
 represent `0.1` exactly, and a rounding error on a price becomes a wrong
 invoice. Parse it with a decimal library, not `parseFloat`.
 
-**Dates are `YYYY-MM-DD`.** Endpoints that read pricing accept `?on=` to ask
-"as at this date"; the default is today.
+**Dates are `YYYY-MM-DD`.** Endpoints that read pricing or stock accept
+`?on=` / `?as_of=` to ask "as at this date"; the default is today.
+
+**Two-step documents.** Receipts, warehouse transfers, and inventory
+adjustments are all entered, then posted, as separate calls — a
+`POST .../post-to-ledger/` or `.../post_to_inventory/` style action distinct
+from the `POST` that created the draft. This lets a warehouse clerk key in
+what arrived, check it against the paper packing list, correct a typo, and
+only then commit it to the ledger. A document can only be posted once;
+posting twice is refused (it would double the stock movement).
 
 **Errors**
 
@@ -48,7 +87,7 @@ invoice. Parse it with a decimal library, not `parseFloat`.
 | 400 | Your input was rejected. The body names the field |
 | 401 | No token, or it expired. Sign in or refresh |
 | 403 | Signed in, but your role is not allowed to do this |
-| 404 | Not found |
+| 404 | Not found (also returned instead of 403 for a cross-site `{id}`, so existence isn't leaked) |
 | 409 | The row is still in use by something else. Nothing you change about the request will help |
 | 429 | Rate limited. Login is 10/min per email address |
 
@@ -74,32 +113,41 @@ A 409 names what is blocking the delete, so the message can be acted on:
 Master data splits in two, and the line is **does the row carry meaning that
 outlives it**.
 
-**Cannot be deleted — 405.** Retire these instead:
+**Cannot be deleted — 405.** Retire, correct, or withdraw instead:
 
-| Resource | Retire with | Why |
+| Resource | Instead, do this | Why |
 |---|---|---|
+| Users | `POST /auth/users/{id}/deactivate/` | Sign-in history and every stock movement point at them |
 | SKUs | `PATCH {"is_active": false}` | The control number is printed on documents and never reissued |
 | Prices | `PATCH` to correct it | A March invoice reprints at March's price only while that row exists |
-| Users | `POST /users/{id}/deactivate/` | Sign-in history — and soon every stock movement — points at them |
+| Reason codes | `PATCH {"is_active": false}` | A past adjustment still points at the code used to make it |
+| Warehouse transfers, inventory adjustments, receipts | n/a — no delete route exists at all | Two-step documents are never removed once drafted; a mistake is corrected before posting or reversed with a new document after |
+| Group orders, production orders | n/a — no delete route; `PATCH {"status": "CANCELLED"}` instead | An order funds a Tailoring Center; withdrawing it is a status change, not an erasure |
+| School orders | n/a — no delete route; `POST .../cancel/` instead, and only while on Hold | A parent already has the invoice number |
 
-**Can be deleted** — garments, sizes, sites, minimum stock levels. These are
-configuration, and deleting is how a typo gets fixed. The database still
-refuses any row that is referenced, with a **409** naming what is using it.
+**Can be deleted** — garments, sizes, tailoring centers, warehouses, schools,
+minimum stock levels, kits, kit items. These are configuration, and deleting
+is how a typo gets fixed. The database still refuses any row that is
+referenced elsewhere, with a **409** naming what is using it — except
+`KitItem`, which cascades: deleting a `Kit` removes its bill-of-materials
+lines with no 409, the one deliberate exception to this codebase's usual
+`PROTECT`-everywhere default.
 
 ---
 
-## Authentication — F01
+## `accounts` — 18 operations
 
-### `POST /api/auth/login/`
+### Tokens (no token required)
 
-No token required.
+| Method | Path | Does |
+|---|---|---|
+| `POST` | `/api/auth/login/` | Exchange email + password for `access` + `refresh` tokens, plus the whole user record |
+| `POST` | `/api/auth/refresh/` | Exchange a refresh token for a new `access` **and a new `refresh`** — the old refresh token is now dead |
+| `POST` | `/api/auth/verify/` | 200 if a token is still valid, 401 if not |
 
 ```json
 { "email": "sharon@asone.test", "password": "..." }
 ```
-
-Returns the tokens **and the whole user**, so no second call is needed to
-render the app:
 
 ```json
 {
@@ -139,43 +187,20 @@ render the app:
 401 on a wrong password **and** on an unknown address — the two responses are
 identical, so neither reveals whether an account exists.
 
-### `POST /api/auth/refresh/`
+### The signed-in user
 
-```json
-{ "refresh": "eyJ..." }
-```
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/api/auth/me/` | Your own record — same shape as `login`'s `user` object | any signed-in user, self only (works even mid password-change) | — |
+| `PATCH` | `/api/auth/me/` | Change your own name/email (role and site are **not** writable here) | — | any signed-in user, self only |
+| `POST` | `/api/auth/password/change/` | Change your own password (current password required); rotates tokens and signs out every other session | — | any signed-in user (this is how the password-change gate clears) |
+| `POST` | `/api/auth/logout/` | Blacklist a refresh token, signing that session out. Returns **205** | — | any signed-in user |
 
-Returns a new `access` **and a new `refresh`**. Store both — the old refresh
-token is dead.
+### Reference data
 
-### `POST /api/auth/verify/`
-
-```json
-{ "token": "eyJ..." }
-```
-
-200 if valid, 401 if not.
-
-### `POST /api/auth/logout/`
-
-```json
-{ "refresh": "eyJ..." }
-```
-
-Returns **205**. Blacklists the refresh token. The access token stays valid
-until it expires — inherent to stateless tokens, and why they are short.
-
----
-
-## Access control — F02
-
-### `GET /api/auth/me/`
-
-The signed-in user, same shape as `login`'s `user` object.
-
-### `GET /api/auth/roles/`
-
-The five roles and the seven columns of AsOne's access matrix.
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/api/auth/roles/` | The five roles and the seven columns of AsOne's access matrix | any signed-in user **not** currently on a forced password change — worth confirming with the client, since this is otherwise-harmless reference data a "set your password" screen could use | — |
 
 ```json
 [
@@ -198,53 +223,20 @@ The five roles and the seven columns of AsOne's access matrix.
 > Hiding a menu is cosmetic. The server re-checks every request, so a 403 is
 > always possible and must be handled.
 
----
+### User administration — **leads (PL, OM) only**, everyone else 403
 
-## Passwords — F03
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/api/auth/users/` | List. Filter `?role=` `?is_active=` `?warehouse=` `?school=` | leads | — |
+| `POST` | `/api/auth/users/` | Add a user; returns the plaintext password once | — | leads |
+| `GET` | `/api/auth/users/{id}/` | One user | leads | — |
+| `PATCH` | `/api/auth/users/{id}/` | Edit name, email, role, site — blocks a lead from changing their own role or deactivating themself | — | leads |
+| `POST` | `/api/auth/users/{id}/set-password/` | Set someone else's password (or auto-generate one); no current password needed, since the point is nobody has it. Signs that account out everywhere | — | leads |
+| `POST` | `/api/auth/users/{id}/activate/` | Restore access | — | leads |
+| `POST` | `/api/auth/users/{id}/deactivate/` | Remove access, sign out everywhere (cannot target yourself) | — | leads |
+| `POST` | `/api/auth/users/{id}/sign-out/` | Retire sessions; account stays usable | — | leads |
 
-### `POST /api/auth/password/change/`
-
-Your own password.
-
-```json
-{ "current_password": "...", "new_password": "..." }
-```
-
-Requires the current password even though you are signed in, so a stolen
-token alone cannot lock the owner out. Signs out every other session and
-returns a fresh token pair.
-
-### `POST /api/auth/users/{id}/set-password/`
-
-Someone else's password — Program Lead and Operations Manager only.
-
-```json
-{ "new_password": "...", "must_change_password": true }
-```
-
-No current password needed; the point is that nobody has it. Signs that
-account out everywhere. Omit `new_password` to have one generated and
-returned once.
-
-Django's validators apply, so a lead cannot set `1234` for a colleague.
-
----
-
-## User accounts — F14
-
-**Program Lead and Operations Manager only.** Everyone else gets 403.
-
-| Method | Path | Does |
-|---|---|---|
-| `GET` | `/api/auth/users/` | List. Filter `?role=` `?is_active=` `?warehouse=` `?school=` |
-| `POST` | `/api/auth/users/` | Add a user |
-| `GET` | `/api/auth/users/{id}/` | One user |
-| `PATCH` | `/api/auth/users/{id}/` | Edit name, email, role, site |
-| `POST` | `/api/auth/users/{id}/activate/` | Restore access |
-| `POST` | `/api/auth/users/{id}/deactivate/` | Remove access, sign out |
-| `POST` | `/api/auth/users/{id}/sign-out/` | Retire sessions, account stays usable |
-
-**Adding a user:**
+`PUT` and `DELETE` on `/users/{id}/` are both **405** — see [Deleting](#deleting).
 
 ```json
 {
@@ -259,25 +251,38 @@ Django's validators apply, so a lead cannot set `1234` for a colleague.
 
 Warehouse staff need `warehouse`; school staff need `school`; the
 all-locations roles take neither — check `requires_site` from `/roles/`.
-Sending the wrong one is a 400.
+Sending the wrong one is a 400. The account must replace the password at
+first sign-in unless you send `must_change_password: false`.
 
-The account must replace the password at first sign-in unless you send
-`must_change_password: false`.
+### Login attempts (read-only)
 
-**Accounts are never deleted** — `DELETE` returns 405. Deactivate instead:
-the audit trail and, in time, the stock ledger point at them.
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/api/auth/login-attempts/` | Every sign-in attempt, success or fail, newest first. Filter `?email=` `?succeeded=` `?user=` | leads | — |
+| `GET` | `/api/auth/login-attempts/{id}/` | One attempt | leads | — |
+
+No create/update/delete route exists — these rows are written only as a
+byproduct of `/login/` itself.
 
 ---
 
-## Master data — sites — F10, F11, F12
+## `catalog` — 62 operations
 
-| Path | Feature |
-|---|---|
-| `/api/catalog/tailoring-centers/` | F10 |
-| `/api/catalog/warehouses/` | F11 |
-| `/api/catalog/schools/` | F12 |
+Write is **identical across all ten resources in this app: leads (PL, OM)
+only** — this is the "Table Updates" column of AsOne's access matrix, and it
+never varies by table. Read varies per resource instead, so only read access
+is called out row by row below.
 
-Each supports `GET` (list), `POST`, `GET /{id}/`, `PATCH /{id}/`.
+### Sites — F10, F11, F12 (full CRUD)
+
+| Path | Feature | Read |
+|---|---|---|
+| `/api/catalog/tailoring-centers/` | F10 | leads, WH |
+| `/api/catalog/warehouses/` | F11 | leads, WH |
+| `/api/catalog/schools/` | F12 | leads, WH, SCH |
+
+Each supports `GET` (list, with `?search=`), `POST`, `GET /{id}/`,
+`PUT /{id}/`, `PATCH /{id}/`, `DELETE /{id}/` (409 if referenced elsewhere).
 
 ```json
 { "id": 2, "name": "Namayemba", "address": "",
@@ -287,13 +292,16 @@ Each supports `GET` (list), `POST`, `GET /{id}/`, `PATCH /{id}/`.
 Schools carry `level` (`PS` or `HS`), `level_display`, and
 `primary_warehouse`. Filter with `?level=` and `?primary_warehouse=`.
 
----
+### Products — F05, F06, F07
 
-## Master data — products — F05, F06, F07
+#### Sizes — F05 (full CRUD)
 
-### Garments and sizes — F05
+`/api/catalog/sizes/` — **read: leads only.** `GET`, `POST`, `GET /{id}/`,
+`PUT`, `PATCH`, `DELETE` (409 if a SKU still uses it).
 
-`/api/catalog/garments/` and `/api/catalog/sizes/`
+#### Garments — F05 (full CRUD + 2 actions)
+
+`/api/catalog/garments/` — **read: leads only.**
 
 ```json
 { "id": 1, "name": "White Shirt", "school_level": "BOTH",
@@ -302,13 +310,33 @@ Schools carry `level` (`PS` or `HS`), `level_display`, and
 ```
 
 `current_price` is **null**, not `0`, when a garment has no price today — a
-missing price is a data gap, not a free uniform.
+missing price is a data gap, not a free uniform. Filter with
+`?school_level=` and `?is_active=`; search with `?search=`.
 
-Filter with `?school_level=` and `?is_active=`; search with `?search=`.
+> **Read here is narrower than the SKU that mirrors this same price**:
+> `/skus/` exposes the identical read-through `unit_price` to Warehouse
+> Staff, School Staff and Finance, but `/garments/` does not. The code's own
+> comment flags this as worth confirming with the client rather than
+> assuming it's deliberate.
 
-### SKUs — F06
+`DELETE` on a garment is a plain 409 if a SKU or price still references it
+(no 405 override here, unlike SKUs and prices themselves).
 
-`/api/catalog/skus/`
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/catalog/garments/{id}/prices/` | This garment's full price history, newest first |
+| `POST` | `/api/catalog/garments/{id}/reprice/` | **The correct way to change a price.** Closes the current open-ended price on `active_from` and opens a new one |
+
+```json
+{ "unit_price": "28000.00", "active_from": "2027-01-01" }
+```
+
+> Repricing **adds history, it never rewrites it**. An invoice raised in
+> March still costs out at March's price when reprinted in September.
+
+#### SKUs — F06 (CRUD minus DELETE)
+
+`/api/catalog/skus/` — **read: leads, WH, SCH, FIN (all five roles).**
 
 ```json
 { "id": 12, "number": "100015", "garment": 3, "garment_name": "Blue Tunic (PS)",
@@ -327,9 +355,9 @@ Filter with `?school_level=` and `?is_active=`; search with `?search=`.
 Filter `?garment=` `?size=` `?is_active=` `?garment__school_level=`;
 search `?search=` over number and description.
 
-### Minimum stock levels — F07
+#### Minimum stock levels — F07 (full CRUD)
 
-`/api/catalog/minimum-stock-levels/`
+`/api/catalog/minimum-stock-levels/` — **read: leads, WH.**
 
 ```json
 { "id": 1, "sku": 12, "sku_number": "100015",
@@ -337,34 +365,15 @@ search `?search=` over number and description.
   "warehouse": 2, "warehouse_name": "Namayemba", "minimum_quantity": 120 }
 ```
 
-One row per SKU per warehouse. Filter `?warehouse=` `?sku=`.
+One row per SKU per warehouse. Filter `?warehouse=` `?sku=`. `DELETE` is a
+plain 409 if referenced (nothing currently protects against removing a
+floor, so this should always succeed cleanly).
 
----
+### Pricing — F08
 
-## Pricing — F08
+#### `/api/catalog/prices/` (CRUD minus DELETE) — read: leads, SCH, FIN
 
-### `GET /api/catalog/garments/{id}/prices/`
-
-The full price history for a garment, newest first.
-
-### `POST /api/catalog/garments/{id}/reprice/`
-
-**The correct way to change a price.**
-
-```json
-{ "unit_price": "28000.00", "active_from": "2027-01-01" }
-```
-
-Closes the current open-ended price on that date and opens a new one.
-Returns 201 with the new price.
-
-> Repricing **adds history, it never rewrites it**. An invoice raised in
-> March still costs out at March's price when reprinted in September.
-
-### `/api/catalog/prices/`
-
-The whole pricing table, for corrections and auditing. `GET`, `POST`,
-`PATCH /{id}/`.
+The whole pricing table, for corrections and auditing.
 
 ```json
 { "id": 1, "garment": 1, "garment_name": "White Shirt",
@@ -387,14 +396,12 @@ database refuses them. You get a 400:
 { "non_field_errors": ["This garment already has a price covering part of that period. Close the existing price first."] }
 ```
 
----
+#### Price list reports (`GET`-only) — read: all five roles
 
-## Price lists — F15
-
-### `GET /api/catalog/price-lists/?level=PS`
-
-`level` is `PS` or `HS` and is required. Add `?on=YYYY-MM-DD` for a past or
-future date.
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/catalog/price-lists/?level=PS\|HS&on=` | The published price list for one level on a date (F15/F51) |
+| `GET` | `/api/catalog/price-lists/gaps/?on=&level=` | Active garments with **no** price on that date — run this before publishing a list, or a garment silently disappears from what schools can order. **Leads and Finance only** |
 
 ```json
 [
@@ -403,40 +410,211 @@ future date.
 ]
 ```
 
-Garments marked `BOTH` appear on each list.
+Garments marked `BOTH` appear on each list. Unpriced garments are **omitted,
+not shown at zero** — a line with no price is worse than no line.
 
-> **Unpriced garments are omitted, not shown at zero.** A price list is a
-> document a school orders from; a line with no price is worse than no line.
+> **School Staff cannot pass `?level=`** on this endpoint — they're forced
+> to their own school's level, and asking for the other level is a 403, not
+> a silent correction to the right one.
 
-### `GET /api/catalog/price-lists/gaps/`
+### Kits — F09 (full CRUD, both resources)
 
-Active garments with **no** price on that date — the report to run before
-publishing a list, or a garment silently disappears from what schools can
-order. Finance and leads only.
+| Path | Does | Read |
+|---|---|---|
+| `/api/catalog/kits/` | The kit shell — `kit_number`, `name`, `school_level`, computed `current_price` (sum of components) and `item_count` | leads, SCH, FIN |
+| `/api/catalog/kit-items/` | The bill-of-materials lines — `kit`, `sku`, `quantity`. A **separate resource**, not nested under kit writes | leads, SCH, FIN |
+
+`kit-items` rejects a retired SKU or a school-level mismatch at creation.
+Deleting a `Kit` **cascades** to its `KitItem` rows with no 409 — the one
+deliberate exception to this codebase's `PROTECT`-everywhere default,
+because a bill-of-materials line has no meaning apart from its kit.
 
 ---
 
-## Who can do what
+## `inventory` — 19 operations
 
-Editing master data is the "Table Updates" column of AsOne's matrix — leads
-only. Reading is granted table by table, and not to the same roles each time.
+### Reports (`GET`-only)
 
-| Endpoint | Read | Write |
+| Method | Path | Does | Read |
+|---|---|---|---|
+| `GET` | `/api/inventory/stock-levels/` | F47: units on hand per SKU/warehouse, summed live from the ledger — there is no stored quantity column. `?warehouse=` `?as_of=` `?include_zero=` | leads, WH (own warehouse only), FIN |
+| `GET` | `/api/inventory/reorder-alerts/` | F50: SKUs at or below their warehouse's minimum. `?warehouse=` `?as_of=` | leads, WH (own warehouse). **Not Finance** |
+
+> F47 and F50 deliberately disagree on whether Finance can read — worth
+> confirming that's intentional rather than an oversight, since they answer
+> closely related questions.
+
+### Stock movement ledger — F48 (read-only)
+
+| Method | Path | Does | Read |
+|---|---|---|---|
+| `GET` | `/api/inventory/movements/` | The append-only audit trail. `?sku=` `?warehouse=` `?movement_type=` `?document_number=` | leads (all warehouses), WH (own warehouse only), FIN (all warehouses) |
+| `GET` | `/api/inventory/movements/{id}/` | One ledger row | same |
+
+No write route exists at all — `StockMovement` refuses `save()` on an
+existing row and refuses `delete()` outright at the model level. The only
+way a row is ever written is as a byproduct of posting a receipt, transfer,
+or adjustment.
+
+### Reason codes — F13 (CRUD minus PUT/DELETE)
+
+`/api/inventory/reason-codes/` — Return, Warehouse Transfer, Pick up or
+Loss, Damaged, and the two count-correction codes, "and others as needed."
+
+| Method | Read | Write |
 |---|---|---|
-| `/auth/users/` | leads | leads |
-| `/auth/roles/`, `/auth/me/` | anyone signed in | — |
-| `/catalog/garments/`, `/sizes/`, `/skus/` | leads, warehouse, school, finance | leads |
-| `/catalog/prices/` | leads, school, finance | leads |
-| `/catalog/minimum-stock-levels/` | leads, warehouse | leads |
-| `/catalog/tailoring-centers/`, `/warehouses/` | leads, warehouse | leads |
-| `/catalog/schools/` | leads, warehouse, school | leads |
-| `/catalog/price-lists/` | leads, warehouse, school, finance | — |
-| `/catalog/price-lists/gaps/` | leads, finance | — |
+| `GET` (list, detail, `?is_active=`, `?search=`) | leads, FIN | — |
+| `POST`, `PATCH` | — | leads only (Finance can read this table but not maintain it) |
 
-"Leads" = Program Lead and Operations Manager.
+No `PUT`, no `DELETE` — retire with `PATCH {"is_active": false}`; a past
+adjustment still points at the code that was used to make it.
 
-Note **warehouse staff cannot read prices**, and **school staff cannot read
-minimum stock levels** — those cells are blank in the client's matrix.
+### Warehouse transfers — F25 (create + post, no PUT/DELETE)
+
+`/api/inventory/transfers/` — stock moving between the two warehouses, no
+money moving.
+
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/transfers/` | List. `?from_warehouse=` `?to_warehouse=` `?posted_at=` | leads, FIN. **Not Warehouse Staff** — a transfer touches two sites, and a clerk only sees one | — |
+| `POST` | `/transfers/` | Draft a transfer — does **not** move stock yet. Refused up front if the source warehouse doesn't hold enough | — | leads, FIN (same roles as read — no extra gate on who may draft) |
+| `GET` | `/transfers/{id}/` | Detail | leads, FIN | — |
+| `PATCH` | `/transfers/{id}/` | Header-only edit (from/to warehouse, date, reason code, notes) — `lines` is fixed once created | — | leads, FIN |
+| `POST` | `/transfers/{id}/post-to-ledger/` | Commits: two ledger rows at the same value, one out of the source, one into the destination. Re-checks stock at post time too, since time passes between drafting and posting | — | leads, FIN (same role gate as create) |
+
+### Inventory adjustments — F23, F26, F27 (create + post, no PUT/DELETE)
+
+`/api/inventory/adjustments/` — the one document type that Returns and
+Damages both reuse unchanged, just with a different reason code.
+
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/adjustments/` | List. `?warehouse=` `?sku=` `?reason_code=` `?posted_at=` | **Finance only** — not even leads. See open question Q3 in the client's own pack: the access matrix gives adjustments to Finance alone, which is coded exactly as specified | — |
+| `POST` | `/adjustments/` | Draft an adjustment — does **not** touch the ledger yet. Refused if the SKU has no price on the date, or a decreasing code would take stock below zero | — | Finance only |
+| `GET` | `/adjustments/{id}/` | Detail | Finance only | — |
+| `PATCH` | `/adjustments/{id}/` | Edit any draft field (warehouse, SKU, quantity, reason code, date, notes) | — | Finance only |
+| `POST` | `/adjustments/{id}/post-to-ledger/` | Commits: one ledger row, sign taken from the reason code's direction, valued at the SKU's price **on the adjustment date**, re-looked-up at post time in case a reprice happened in between | — | Finance only |
+
+### Physical count correction — F24 (custom action, not a document type)
+
+| Method | Path | Does | Write |
+|---|---|---|---|
+| `POST` | `/api/inventory/adjustments/correct-count/` | The actual F24: compares a physical count to the system's figure and posts the **difference** itself — the caller supplies only what was counted, not a signed quantity. Posts immediately, no separate create/post step. Returns 201 with the new adjustment, or 200 with `"adjustment": null` if the count matched exactly | Finance only |
+
+```json
+{ "warehouse": 1, "sku": 42, "counted_quantity": 520, "adjustment_date": "2026-11-16" }
+```
+
+> **Known risk**: this looks up the `CORR_UP`/`CORR_DOWN` reason codes with
+> `ReasonCode.objects.get(code=...)` — no `is_active` filter, and no handling
+> if the code is missing. A database seeded only by migrations (no
+> `seed_demo`) has neither code yet, so the first count correction anyone
+> runs on it would raise an unhandled 500 rather than a clear error.
+
+---
+
+## `orders` — 11 operations
+
+All under `/api/orders/school-orders/`, plus one report.
+
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/school-orders/` | List. `?status=` `?order_date=` `?search=` (number, student name) | SCH (own school only), FIN (every school). **Not leads** — see below | — |
+| `POST` | `/school-orders/` | F30–33: place an order. Kit lines explode to their component SKUs at write time; every price is locked at the order date; lands on **Hold** | — | SCH only — the school is taken from the clerk's own account, never from the request body |
+| `GET` | `/school-orders/{id}/` | Detail | SCH (own school), FIN (any school) | — |
+| `PATCH` | `/school-orders/{id}/` | Edits `student_name`/`order_date`/`notes` only — a plain field edit, not a modelled feature. `status`, `school`, and the cancellation fields are read-only here | — | SCH only |
+| `GET` | `/school-orders/{id}/demand/` | One row per SKU the warehouse must pick, summed across kit and individual lines | SCH (own school), FIN (any school) | — |
+| `GET` | `/school-orders/{id}/availability/` | F37: needed vs. available vs. shortfall per SKU at the order's own warehouse. Reserves nothing | leads, WH (own warehouse). **Not the school that placed the order, not Finance** | — |
+| `GET` | `/school-orders/{id}/pick-list/` | F38: printable pick sheet — the same underlying data as `demand/`, gated to a different audience | leads, WH (own warehouse) | — |
+| `POST` | `/school-orders/{id}/pick/` | F39: reserves stock per line, Available → Picked. Refused if any line is short, or the order is cancelled/already picked/shipped | — | leads, WH (own warehouse) |
+| `GET` | `/school-orders/{id}/invoice/` | F34: the order as a document a school hands to a parent — kit lines regrouped with subtotals | SCH (own school), FIN (any school) | — |
+| `POST` | `/school-orders/{id}/cancel/` | F36: withdraw an unpaid order — only while still on Hold. Records who, when, and why | — | SCH only |
+| `GET` | `/api/orders/reports/on-hold/` | F53: raised-but-unpaid invoices, oldest first | leads, FIN (every school), SCH (own school only) | — |
+
+`PATCH` and the two `pick`/`cancel` actions are the only writes; `PUT` and
+`DELETE` are both 405 — a school order is withdrawn with `cancel/`, never
+deleted, because the school has already handed the number to a parent.
+
+> **Program Lead and Operations Manager cannot list or retrieve a raw
+> school order at all.** Their only visibility into this resource is the
+> F53 on-hold report and the two warehouse-fulfilment actions
+> (`availability/`, `pick-list/`, `pick/`) — `/school-orders/` and
+> `/school-orders/{id}/` themselves are School-Staff-and-Finance only.
+>
+> **`demand/` and `pick-list/` return identical data** (the same
+> `order_demand()` call underneath) but are gated to two disjoint
+> audiences — School Staff/Finance on one, leads/Warehouse Staff on the
+> other. Worth confirming with the client whether that split is intentional
+> or these were meant to be the same endpoint.
+
+---
+
+## `procurement` — 18 operations
+
+### Group orders — F16 (create + header-amend, no PUT/DELETE)
+
+`/api/procurement/group-orders/` — the consolidated requirement across all
+three Tailoring Centers.
+
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/group-orders/` | List. `?status=` `?order_date=` | leads, FIN. **Not Warehouse or School Staff** | — |
+| `POST` | `/group-orders/` | Raise a group order with its lines in one transaction. A line without an explicit price copies the garment's current price and fixes it there | — | leads only |
+| `GET` | `/group-orders/{id}/` | Detail | leads, FIN | — |
+| `PATCH` | `/group-orders/{id}/` | F18: header-only amend (`status`, `due_in_warehouse_date`, `notes`) — sending `lines` is rejected outright rather than silently ignored. This is also how a group order is **cancelled**: there is no separate cancel action, just `{"status": "CANCELLED"}` | — | leads only |
+| `GET` | `/group-orders/{id}/reconciliation/` | Group-order lines vs. the sum of its production orders — reported, not enforced. A negative `difference` means the TCs were asked for less than the requirement | leads, FIN | — |
+
+### Production orders — F17, F18, F22 (create + header-amend, no PUT/DELETE)
+
+`/api/procurement/production-orders/` — one warehouse's order on one TC.
+
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/production-orders/` | List. `?status=` `?tailoring_center=` `?warehouse=` `?group_order=` | leads, FIN (all warehouses), WH (own warehouse only) | — |
+| `POST` | `/production-orders/` | Raise one (`group_order` is optional — a reorder or emergency order has none) | — | leads only. Warehouse Staff can *read* their own warehouse's orders but cannot create or amend them |
+| `GET` | `/production-orders/{id}/` | Detail | leads, FIN, WH (own warehouse) | — |
+| `PATCH` | `/production-orders/{id}/` | F18: same header-only amend/cancel mechanism as group orders | — | leads only |
+| `GET` | `/production-orders/open/` | F22: orders not yet closed. Currently means status = Open only — nothing auto-closes an order once fully received, so this can list an order everyone considers done | leads, FIN, WH (own warehouse) | — |
+| `GET` | `/production-orders/{id}/outstanding/` | Ordered minus received (posted receipts only), per SKU | leads, WH (own warehouse). **Finance excluded** — this one endpoint uses the receiving permission class rather than the master-data one every sibling above uses | — |
+
+### Receipts — F19, F20, F21 (create + post, no PUT/DELETE)
+
+`/api/procurement/receipts/` — what arrived, checked against the TC's
+handwritten packing list before anything is committed.
+
+| Method | Path | Does | Read | Write |
+|---|---|---|---|---|
+| `GET` | `/receipts/` | List. `?production_order=` `?posted_at=` | leads, WH (own warehouse). **Finance excluded from the raw list** — its only receipts visibility is the costed report below | — |
+| `POST` | `/receipts/` | Record a delivery — does **not** touch stock yet. Every SKU on it must already be on the production order; the server also checks the clerk's own warehouse against the order's warehouse | — | leads, WH (own warehouse) |
+| `GET` | `/receipts/{id}/` | Detail | leads, WH (own warehouse) | — |
+| `PATCH` | `/receipts/{id}/` | Header-only edit (`packing_list_number`, `date_received`, `notes`, `production_order`) — `lines` is fixed at creation | — | leads, WH (own warehouse) |
+| `POST` | `/receipts/{id}/post_to_inventory/` | F21: commits — one ledger row per line, valued at **the production order's agreed price**, not today's price list | — | leads, WH (own warehouse) |
+
+> **Naming inconsistency**: this action is `post_to_inventory` (underscored)
+> while the structurally identical actions on transfers and adjustments are
+> `post-to-ledger` (hyphenated). Confirmed live in the schema — worth
+> normalising if a generated client is ever handed to the frontend team.
+
+```json
+{
+  "production_order": 4,
+  "packing_list_number": "IDUDI-2026-041",
+  "date_received": "2026-10-10",
+  "lines": [
+    { "sku": 12, "quantity_received": 480, "quantity_on_packing_list": 500,
+      "discrepancy_note": "20 short — TC ran out of size 10 fabric" }
+  ]
+}
+```
+
+### Finance reports — F55, F56 (`GET`-only)
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/reports/group-orders-costed/` | F55: what was committed to the TCs, valued at order-time prices. `?from=` `?to=` `?include_cancelled=`; response has a `totals` object alongside `orders` |
+| `GET` | `/reports/receipts-costed/` | F56: what each TC actually delivered and its cost — valued at the agreed TC price, counted at what actually arrived, posted receipts only. `?from=` `?to=` `?tailoring_center=` `?warehouse=` `?detail=true` for receipt-level rows |
+
+Read: **leads and Finance only** on both.
 
 ---
 
@@ -451,21 +629,69 @@ minimum stock levels** — those cells are blank in the client's matrix.
 
 ---
 
-## Exists but NOT counted as complete
+## Known oddities worth confirming with the client
 
-These work, but their feature is still partial. Do not mark them done.
+None of these are bugs in the sense of "doesn't match the spec" — the spec
+(the client's own access matrix, p.9) is ambiguous or silent on each of
+them, and the code picked a reading. Listed here so a reading nobody
+actually decided doesn't quietly become the reading everybody assumed.
 
-| Endpoint | Feature | Why it is not complete |
-|---|---|---|
-| `PATCH /api/auth/me/` | F63 User settings screen | Backend works; there is no screen |
-| `GET /api/auth/login-attempts/` | F04 User on every transaction | Sign-ins are audited. "Every stock movement and order action" needs the inventory ledger, which does not exist yet |
+1. **Garment reads are narrower than SKU reads**, even though a SKU exposes
+   the exact same price. `/catalog/garments/` is leads-only; `/catalog/skus/`
+   is open to Warehouse Staff, School Staff and Finance too.
+2. **`GET /auth/roles/` is blocked for a user on a forced password
+   change**, unlike `/auth/me/`, `/auth/password/change/`, and
+   `/auth/logout/`, which all explicitly allow it. This is reference data a
+   "set your password" screen could plausibly want.
+3. **`/orders/school-orders/{id}/demand/` and `.../pick-list/` return
+   identical data** through two different, non-overlapping audiences
+   (School Staff/Finance vs. leads/Warehouse Staff).
+4. **Program Lead and Operations Manager cannot read the school-orders
+   resource at all** — only the on-hold report and the fulfilment actions.
+5. **`/inventory/stock-levels/` and `/inventory/reorder-alerts/` disagree on
+   Finance access** (the first allows it, the second doesn't) despite
+   answering closely related questions.
+6. **`/procurement/production-orders/{id}/outstanding/` excludes Finance**
+   while every other production-order endpoint allows it — it uses the
+   receiving permission class rather than the master-data one its siblings
+   use.
+7. **`post_to_inventory` vs. `post-to-ledger`** — the same "commit this
+   draft document" action is spelled two different ways depending on the
+   app.
+8. **`POST /inventory/adjustments/correct-count/`** raises an unhandled 500
+   on a database where `CORR_UP`/`CORR_DOWN` haven't been seeded or have
+   been deactivated — see the note under F24 above.
 
 ---
 
-## Not built at all
+## Feature coverage
 
-`inventory`, `procurement` and `orders` have no endpoints. That covers Uniform
-Kits (F09), reason codes (F13), group and production orders (F16–F18),
-receipts (F19–F22), all inventory adjustments (F23–F28), the whole point of
-sale and fulfilment (F29–F46), and every report that needs stock levels
-(F47–F50, F52–F58).
+Endpoints existing is not the same as a feature being finished. This tracks
+against the client's F01–F63 checklist; "done" below means the backend
+behaviour is complete, not that any frontend screen exists — **there is no
+frontend in this repository to evaluate.**
+
+**Done**: F01–F17, F19–F21, F23, F25–F34, F36–F39, F47, F48, F50, F51, F53,
+F55, F56, F61 (no offline entry exists, matching the requirement).
+
+> **F04 (user recorded on every transaction) is a correction, not a
+> reshuffle.** The previous version of this file marked it incomplete,
+> waiting on "the inventory ledger, which does not exist yet." That ledger
+> exists now — `created_by` is a required, `PROTECT`ed field on every
+> transactional model (`StockMovement`, `InventoryAdjustment`,
+> `WarehouseTransfer`, `Receipt`, `GroupOrder`/`ProductionOrder`,
+> `SchoolOrder`) — so F04 has moved from "not complete" to "done."
+
+**Partial**: F18 (header amend only, no line editing — "Should", not
+"Must"), F22 (nothing auto-closes a fully-received order), F24 (correct
+logic, but see the reason-code risk above), F60/F62/F63 (backend-ready,
+no frontend to render them).
+
+**Not built at all**: F09's ordering path exists but F35 (Hold → Released,
+blocked on the client's own open question about what "School Monitor"
+is), F40 (packing list print), F41 (Pick → Shipped — deliberately absent,
+tied to the client's own "Shipped ???" chart), F42 (weekly shipment
+batching), F43–F46 (the entire backorder subsystem — a permission class
+exists for it, nothing is wired to it), F49, F52, F54, F57, F58 (costed
+adjustments report) do not exist. F59 (branding) is unverifiable with no
+frontend present.

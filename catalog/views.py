@@ -167,12 +167,23 @@ class TailoringCenterViewSet(viewsets.ModelViewSet):
 
 @extend_schema(tags=["Master data — sites"])
 class WarehouseViewSet(viewsets.ModelViewSet):
-    """Where finished stock is held."""
+    """Where finished stock is held.
+
+    Finance reads this, which the matrix's "Warehouses — view: Warehouse
+    Staff" line does not say on its face. It follows from two cells that do:
+    Finance's scope is *all locations*, and F23 gives them adjustments at
+    *all sites*. An adjustment names the warehouse it is posted at, so a role
+    that cannot list warehouses cannot post one — the picker on the New
+    Adjustment screen came up empty and there was no way to choose a site.
+
+    Read only, as for everybody outside the leads. Editing a warehouse is
+    still the Table Updates column.
+    """
 
     queryset = Warehouse.objects.select_related("primary_tailoring_center").order_by("name")
     serializer_class = WarehouseSerializer
     permission_classes = MASTER_DATA
-    read_roles = (Role.WAREHOUSE_STAFF,)
+    read_roles = (Role.WAREHOUSE_STAFF, Role.FINANCE)
     filterset_fields = ("primary_tailoring_center", "is_active")
 
 
@@ -425,10 +436,19 @@ class SkuViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # A SKU's price is its garment's price, so the subquery correlates on
         # garment_id. 200 SKUs in one query rather than 201.
+        # Garment, then size in *size* order.
+        #
+        # The model orders by `description`, which is deliberate — pick lists
+        # print "in Description sequence" (p.2) and are built from order lines
+        # elsewhere, so that stays. But description is a string, and a picker
+        # sorted by it runs 10, 12, 14, 16, 8: size 8 lands after size 16
+        # because "8" sorts after "1". `Size.sort_order` exists for exactly
+        # this, and every screen that offers a SKU to choose from reads this
+        # endpoint.
         return services.with_current_price(
             Sku.objects.select_related("garment", "size"),
             garment_field="garment_id",
-        ).order_by("description")
+        ).order_by("garment__name", "size__sort_order")
 
 
 @extend_schema(tags=["Master data — SKUs"])

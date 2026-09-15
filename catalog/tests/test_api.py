@@ -36,7 +36,13 @@ READ_AUDIENCE = {
     "catalog:garment-price-list": {Role.SCHOOL_STAFF, Role.FINANCE},
     "catalog:minimum-stock-level-list": {Role.WAREHOUSE_STAFF},
     "catalog:tailoring-center-list": {Role.WAREHOUSE_STAFF},
-    "catalog:warehouse-list": {Role.WAREHOUSE_STAFF},
+    # Finance is wider than the matrix's "Warehouses — view: Warehouse Staff"
+    # line, and follows from two cells that are in it: Finance's scope is all
+    # locations, and F23 gives them adjustments at all sites. An adjustment
+    # names the warehouse it is posted at, so a role that cannot list
+    # warehouses cannot post one. Widened 14 September 2026 — worth putting to
+    # AsOne with open question Q3.
+    "catalog:warehouse-list": {Role.WAREHOUSE_STAFF, Role.FINANCE},
     "catalog:school-list": {Role.WAREHOUSE_STAFF, Role.SCHOOL_STAFF},
     "catalog:kit-list": {Role.SCHOOL_STAFF, Role.FINANCE},
     "catalog:kit-item-list": {Role.SCHOOL_STAFF, Role.FINANCE},

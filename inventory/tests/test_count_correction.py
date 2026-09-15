@@ -20,15 +20,17 @@ from accounts.models import User
 from accounts.tests.factories import build_sites, make_user
 from catalog.models import Garment, GarmentPrice, Size, Sku
 from catalog.services import PriceNotSet
-from inventory.models import InventoryAdjustment, MovementType, ReasonCode
+from inventory.models import InventoryAdjustment, MovementType, ReasonCode, StockStatus
 from inventory.services import (
     CorrectionReasonCodeMissing,
+    NotEnoughStock,
     correct_count,
     post_movement,
     stock_level,
 )
 
 Role = User.Role
+Direction = ReasonCode.AdjustmentDirection
 COUNTED_ON = date(2026, 11, 1)
 
 
@@ -352,3 +354,103 @@ class CountCorrectionApi(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
         self.assertIn("detail", response.data)
+
+
+class CountAgainstPickedStock(TestCase):
+    """The bug that invented inventory — fixed 14 September 2026.
+
+    A count is compared against everything physically at the site, AVAILABLE
+    plus PICK. Comparing against AVAILABLE alone made every count of a shelf
+    holding picked-but-unshipped stock post a correction UP for the reserved
+    units, conjuring goods that never existed — and do it again at the next
+    count.
+    """
+
+    def setUp(self):
+        self.sites = build_sites()
+        self.warehouse = self.sites["namayemba"]
+        self.finance = make_user("musana", Role.FINANCE)
+
+        garment = Garment.objects.create(name="White Shirt")
+        GarmentPrice.objects.create(
+            garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
+        )
+        self.sku = Sku.objects.create(
+            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+        )
+        ReasonCode.objects.create(
+            code="CORR_UP", name="Count higher", direction=Direction.INCREASE
+        )
+        ReasonCode.objects.create(
+            code="CORR_DOWN", name="Count lower", direction=Direction.DECREASE
+        )
+
+        # 245 received; 45 of them picked for an order that has not shipped.
+        post_movement(
+            warehouse=self.warehouse,
+            sku=self.sku,
+            quantity=245,
+            movement_type=MovementType.RECEIPT,
+            unit_value=Decimal("25000.00"),
+            document_number="RC-1",
+            occurred_on=COUNTED_ON,
+            created_by=self.finance,
+        )
+        post_movement(
+            warehouse=self.warehouse,
+            sku=self.sku,
+            quantity=-45,
+            movement_type=MovementType.PICK,
+            unit_value=Decimal("25000.00"),
+            document_number="SO-1",
+            occurred_on=COUNTED_ON,
+            created_by=self.finance,
+        )
+        post_movement(
+            warehouse=self.warehouse,
+            sku=self.sku,
+            quantity=45,
+            movement_type=MovementType.PICK,
+            stock_status=StockStatus.PICK,
+            unit_value=Decimal("25000.00"),
+            document_number="SO-1",
+            occurred_on=COUNTED_ON,
+            created_by=self.finance,
+        )
+
+    def correct(self, counted):
+        return correct_count(
+            warehouse=self.warehouse,
+            sku=self.sku,
+            counted_quantity=counted,
+            adjustment_date=COUNTED_ON,
+            created_by=self.finance,
+        )
+
+    def test_counting_everything_on_the_shelf_posts_nothing(self):
+        """245 on the shelf, 200 available, 45 reserved. The count is right."""
+        self.assertIsNone(self.correct(245))
+
+    def test_a_genuine_shortfall_is_still_caught(self):
+        """240 counted against 245 present — five really are missing."""
+        adjustment = self.correct(240)
+        self.assertIsNotNone(adjustment)
+        self.assertEqual(adjustment.quantity, 5)
+        self.assertEqual(adjustment.reason_code.code, "CORR_DOWN")
+
+    def test_a_genuine_surplus_is_still_caught(self):
+        adjustment = self.correct(250)
+        self.assertEqual(adjustment.quantity, 5)
+        self.assertEqual(adjustment.reason_code.code, "CORR_UP")
+
+    def test_a_shortfall_deeper_than_the_available_pool_is_refused(self):
+        """Counting 100 means 145 are gone, but only 200 are unreserved…
+
+        …and the decrease is posted against AVAILABLE. 145 of 200 is fine.
+        Counting 10 means 235 are gone, more than the 200 available, so the
+        missing units are among the picked ones — a pick that can no longer
+        be filled, which is a different problem and is refused rather than
+        taken out of stock somebody has reserved.
+        """
+        with self.assertRaises(NotEnoughStock):
+            self.correct(10)

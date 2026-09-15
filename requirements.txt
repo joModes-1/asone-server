@@ -6,3 +6,8 @@ psycopg[binary]>=3.2
 python-dotenv>=1.0
 djangorestframework-simplejwt>=5.3
 django-cors-headers>=4.3
+
+# Reading the catalogue AsOne sends as a spreadsheet. Excel rather than
+# CSV because that is what arrives — and a real reader handles dates,
+# number formats and shared strings that hand-parsing the XML would not.
+openpyxl>=3.1

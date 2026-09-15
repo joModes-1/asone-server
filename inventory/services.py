@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from django.db import connection, transaction
 from django.utils import timezone
-from django.db.models import DecimalField, F, IntegerField, Sum, Value
+from django.db.models import DecimalField, F, IntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
 from .models import (
@@ -151,22 +151,44 @@ def stock_levels(warehouse=None, as_of=None, include_zero=False):
     """Stock levels for every SKU that has ever moved — F47.
 
     Returns rows of ``{sku_id, sku__number, sku__description, warehouse_id,
-    warehouse__name, level, value}`` in one query, whatever the SKU count.
+    warehouse__name, level, reserved, value}`` in one query, whatever the SKU
+    count.
+
+    ``level`` is AVAILABLE — what can be picked today — and is what every
+    caller has always meant by "stock level". ``reserved`` is the PICK pool:
+    units set aside for an order that has not shipped, which are **still
+    physically on the shelf**. Whoever is counting sees level + reserved, so a
+    screen that prints only ``level`` and asks them to reconcile is asking
+    them to reconcile against a number that was never in the room. See
+    correct_count().
 
     Zero-level rows are excluded by default: a SKU that has moved in and back
     out again is not "stock", and a warehouse list should show what is there.
     """
     rows = (
-        _ledger(warehouse=warehouse, as_of=as_of)
+        # Both statuses, so `reserved` has rows to sum. SHIPPED is excluded:
+        # it has actually left the building.
+        _ledger(warehouse=warehouse, as_of=as_of, stock_status=None)
+        .filter(stock_status__in=(StockStatus.AVAILABLE, StockStatus.PICK))
         .values("sku_id", "sku__number", "sku__description", "warehouse_id", "warehouse__name")
         .annotate(
-            level=Coalesce(Sum("quantity"), Value(0), output_field=IntegerField()),
+            level=Coalesce(
+                Sum("quantity", filter=Q(stock_status=StockStatus.AVAILABLE)),
+                Value(0),
+                output_field=IntegerField(),
+            ),
+            reserved=Coalesce(
+                Sum("quantity", filter=Q(stock_status=StockStatus.PICK)),
+                Value(0),
+                output_field=IntegerField(),
+            ),
             # output_field is required: quantity is an integer and
             # unit_value a decimal, and Django will not guess which the
             # product should be. Decimal, obviously — this is money.
             value=Coalesce(
                 Sum(
                     F("quantity") * F("unit_value"),
+                    filter=Q(stock_status=StockStatus.AVAILABLE),
                     output_field=DecimalField(max_digits=16, decimal_places=2),
                 ),
                 Value(Decimal("0.00")),
@@ -576,8 +598,35 @@ def correct_count(*, warehouse, sku, counted_quantity, adjustment_date, created_
 
     Raises CorrectionReasonCodeMissing if the code this direction needs does
     not exist or has been retired.
+
+    ---------------------------------------------------------------------
+    What the count is compared against
+    ---------------------------------------------------------------------
+    **Everything physically at the site: AVAILABLE plus PICK.** Not AVAILABLE
+    alone, which is what this did until 14 September 2026 and which invented
+    inventory every time somebody counted a shelf holding picked-but-unshipped
+    stock.
+
+    Worked example of the bug. A warehouse holds 245 shirts, 45 of them picked
+    for an order that has not left. `stock_level` in its default status says
+    200. A clerk counts the shelf, finds 245 — correctly, the goods are still
+    there — and the system posted CORR_UP 45, conjuring 45 shirts that never
+    existed. Count the same shelf again next week and it does it again.
+
+    Picked stock has not gone anywhere; it is reserved, which is a claim on it
+    rather than a location. Only SHIPPED has actually left, and it is excluded.
+
+    The correction is posted against AVAILABLE, because that is the pool a
+    discrepancy belongs to. A shortfall bigger than the available pool is
+    therefore refused by create_adjustment rather than taken out of stock
+    somebody has already reserved — that is a pick that can no longer be
+    filled, a different problem, and not one to paper over here.
     """
-    system_level = stock_level(sku, warehouse, as_of=adjustment_date)
+    on_hand = stock_level(sku, warehouse, as_of=adjustment_date)
+    reserved = stock_level(
+        sku, warehouse, as_of=adjustment_date, stock_status=StockStatus.PICK
+    )
+    system_level = on_hand + reserved
     difference = counted_quantity - system_level
 
     if difference == 0:

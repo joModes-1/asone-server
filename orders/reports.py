@@ -28,6 +28,7 @@ so they cannot drift apart.
 
 from django.db.models import (
     Case,
+    Q,
     Count,
     DecimalField,
     F,
@@ -101,6 +102,25 @@ def outstanding_backorders(warehouse=None, school=None):
 # ---------------------------------------------------------------------------
 
 
+def _responsible_for(queryset, warehouse):
+    """Narrow to orders ``warehouse`` actually has to fill.
+
+    Not ``school__primary_warehouse``. After an F45 transfer the two are
+    different warehouses, and filtering on the school's own left a
+    transferred order on the sending warehouse's backlog — a job they can no
+    longer do, since the stock is not theirs — while keeping it off the
+    receiving warehouse's, where somebody was waiting to pick it.
+
+    The model expresses this as the `warehouse` property, which a queryset
+    cannot filter on, so the same rule is written out here: whoever it was
+    transferred to, or the school's own where it was never transferred.
+    """
+    return queryset.filter(
+        Q(fulfilled_by_warehouse=warehouse)
+        | Q(fulfilled_by_warehouse__isnull=True, school__primary_warehouse=warehouse)
+    )
+
+
 def picking_queue(warehouse=None):
     """Orders waiting for the warehouse to pull them off the shelves — F38.
 
@@ -122,12 +142,14 @@ def picking_queue(warehouse=None):
         SchoolOrder.objects.filter(
             status__in=(OrderStatus.RELEASED, OrderStatus.PICKED)
         )
-        .select_related("school", "school__primary_warehouse", "created_by")
+        .select_related(
+            "school", "school__primary_warehouse", "fulfilled_by_warehouse", "created_by"
+        )
         .prefetch_related("lines__sku")
     )
 
     if warehouse is not None:
-        queryset = queryset.filter(school__primary_warehouse=warehouse)
+        queryset = _responsible_for(queryset, warehouse)
 
     # Most urgent first, then oldest — a warehouse works the top of this list
     # down, and the priority is the hint it sets for itself.
@@ -191,11 +213,13 @@ def part_processed_orders(warehouse=None, school=None):
         # F42: an order reaches a van through its lines now, so "not yet
         # despatched" is "no shipment line points at it".
         .filter(shipment_lines__isnull=True)
-        .select_related("school", "school__primary_warehouse", "created_by")
+        .select_related(
+            "school", "school__primary_warehouse", "fulfilled_by_warehouse", "created_by"
+        )
     )
 
     if warehouse is not None:
-        queryset = queryset.filter(school__primary_warehouse=warehouse)
+        queryset = _responsible_for(queryset, warehouse)
     if school is not None:
         queryset = queryset.filter(school=school)
 
