@@ -159,11 +159,12 @@ def create_staff_user(*, password=None, must_change_password=True, **fields):
     ``password`` is what the lead typed. Omit it and one is generated, which
     is the normal path — the lead reads it once and passes it on, and
     `must_change_password` then forces the owner to replace it at first
-    sign-in, because until they do two people know it.
+    sign-in.
 
-    The generated password is **not emailed**. It travels by whatever route
-    the lead uses; the confirmation code goes by email. Two routes, so
-    holding both means something.
+    This function does not email anything itself. Whether the generated
+    password also goes by email — alongside the account, not on its own —
+    is the caller's decision; see `send_email_verification`'s ``password``
+    argument.
 
     The role/site invariant is checked here rather than trusted, because this
     is reachable from the API, the admin and a management command alike.
@@ -365,7 +366,7 @@ def approve_registration(request, *, role, warehouse=None, school=None, decided_
         warehouse=warehouse,
         school=school,
     )
-    send_email_verification(user, sent_by=decided_by, request=http_request)
+    send_email_verification(user, sent_by=decided_by, request=http_request, password=password)
 
     request.status = request.Status.APPROVED
     request.decided_at = timezone.now()
@@ -766,15 +767,19 @@ STALE_CODE = (
 )
 
 
-def send_email_verification(user, *, sent_by=None, request=None):
+def send_email_verification(user, *, sent_by=None, request=None, password=None):
     """Email a code proving this address belongs to this person.
 
     Any earlier unused code is retired first, so re-sending does not leave
     two working codes.
 
-    The password is deliberately **not** in this email. It reaches the
-    person through their lead, by a different route; putting both in one
-    inbox would make this step prove nothing.
+    ``password`` is opt-in and normally omitted — the password reaches the
+    person through their lead, by a different route, so that proving the
+    address and holding the password are two separate facts. Pass it only
+    when the caller has decided the password should be emailed as well;
+    when given, it rides in this same message rather than a second one,
+    since two emails landing in one inbox seconds apart offers no more
+    protection than one.
     """
     EmailVerification.objects.filter(user=user, consumed_at__isnull=True).update(
         consumed_at=timezone.now()
@@ -789,19 +794,34 @@ def send_email_verification(user, *, sent_by=None, request=None):
         ip_address=_client_ip(request) if request else None,
     )
 
-    send_verification_email(user, code, sent_by=sent_by)
+    send_verification_email(user, code, sent_by=sent_by, password=password)
     return verification
 
 
-def send_verification_email(user, code, *, sent_by=None):
+def send_verification_email(user, code, *, sent_by=None, password=None):
     """Tell somebody they have an account and how to confirm the address.
 
     Failures are not swallowed. If this cannot be sent, creating the account
     must fail loudly — an account whose address was never confirmed cannot
     be signed into, so reporting success would be a lie.
+
+    ``password`` is only ever passed by an explicit choice upstream — see
+    `send_email_verification`.
     """
     days = settings.INVITATION_TTL_DAYS
     who = sent_by.get_full_name() if sent_by else "AsOne Central Office"
+
+    if password:
+        password_paragraph = (
+            f"Your password is {password}\n\n"
+            "You will be asked to replace it with one only you know the "
+            "first time you sign in.\n\n"
+        )
+    else:
+        password_paragraph = (
+            "Your password is not in this email. It reaches you through "
+            "your lead, by a different route.\n\n"
+        )
 
     send_mail(
         subject="Confirm your AsOne Logistics account",
@@ -810,10 +830,9 @@ def send_verification_email(user, code, *, sent_by=None):
             f"{who} has created an account for you on AsOne Logistics, as "
             f"{user.get_role_display()}.\n\n"
             f"Your confirmation code is {code}\n\n"
-            "Enter it on the sign-in page to confirm this address. You will "
-            "then be able to sign in with the password your lead gave you, "
-            "and you will be asked to replace it with one only you know.\n\n"
-            "Your password is not in this email, and never will be.\n\n"
+            "Enter it on the sign-in page to confirm this address, then "
+            "sign in with the password below.\n\n"
+            f"{password_paragraph}"
             f"The code expires in {days} days. If it runs out, ask your lead "
             "to send another.\n\n"
             "If you were not expecting this, you can ignore it — the account "

@@ -513,7 +513,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     password=typed_password, **fields
                 )
                 services.send_email_verification(
-                    user, sent_by=request.user, request=request
+                    user, sent_by=request.user, request=request, password=password
                 )
         except OSError as exc:
             # Anything the mail library raises for "could not send" —
@@ -896,11 +896,6 @@ class RegistrationRequestViewSet(viewsets.ReadOnlyModelViewSet):
             raise self._conflict(exc) from exc
 
         return Response(RegistrationRequestSerializer(registration).data)
-
-    permission_classes = [*AUTHENTICATED, CanUpdateTables]
-    queryset = LoginAttempt.objects.select_related("user")
-    serializer_class = LoginAttemptSerializer
-    filterset_fields = ["email", "succeeded", "user"]
 
 
 @extend_schema(

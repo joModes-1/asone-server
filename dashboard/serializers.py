@@ -41,11 +41,21 @@ class AttentionAlertSerializer(serializers.Serializer):
 
     kind = serializers.CharField(
         help_text="Stable identifier for the frontend to route on: "
-        "low_stock, orders_on_hold, receipts_unreconciled, backorders_fillable."
+        "low_stock, orders_on_hold, receipts_unreconciled, backorders_fillable, "
+        "registrations_pending."
     )
     level = serializers.CharField(help_text="CRITICAL, HOLD, INSPECTION or READY.")
     count = serializers.IntegerField()
     message = serializers.CharField()
+    ref_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="The one record this alert is about, for kinds that are "
+        "one row per record rather than a rollup — currently only "
+        "registrations_pending, where it is the RegistrationRequest id. "
+        "Absent for every other kind: those are a count over many records, "
+        "with no single one to link to.",
+    )
 
 
 class ActivityEventSerializer(serializers.Serializer):
@@ -84,6 +94,7 @@ class NotificationSerializer(serializers.Serializer):
     level = serializers.CharField()
     message = serializers.CharField()
     count = serializers.IntegerField()
+    ref_id = serializers.IntegerField(required=False, allow_null=True)
 
 
 class NotificationsSerializer(serializers.Serializer):

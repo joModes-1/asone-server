@@ -208,8 +208,8 @@ def backorders_ready_to_fill(warehouse=None):
     ]
 
 
-def needs_attention(warehouse=None):
-    """The alert list — four kinds of thing somebody should look at.
+def needs_attention(warehouse=None, user=None):
+    """The alert list — five kinds of thing somebody should look at.
 
     Each row is a count and a sentence, not a list: the design shows one line
     per kind with a chip, and the row links through to the screen that has
@@ -218,6 +218,9 @@ def needs_attention(warehouse=None):
 
     Rows with a count of zero are omitted. An empty list means there is
     genuinely nothing to do, which is worth being able to say.
+
+    `user` gates the one row (`registrations_pending`) that not everyone who
+    can see this list is allowed to act on — see below.
     """
     alerts = []
 
@@ -292,6 +295,40 @@ def needs_attention(warehouse=None):
                 ),
             }
         )
+
+    # Registration requests, not stock — gated on the same roles as the
+    # approve/decline endpoints (`CanUpdateTables`: Program Lead and
+    # Operations Manager), not on warehouse scope. Finance and Warehouse
+    # Staff can see the rest of this list but cannot act on a registration,
+    # so showing them this row would point at a 403.
+    #
+    # One alert per request, not a single rolled-up count. Every other kind
+    # here is a count over many rows because there is nowhere for one row to
+    # link to — but a registration is a specific person a lead reviews one
+    # at a time, so each gets its own row and its own `ref_id` to open
+    # straight into that person's review, the same way an order or a receipt
+    # would if this list linked to records instead of screens.
+    from accounts.models import RegistrationRequest
+    from accounts.permissions import ALL_SITE_ROLES
+
+    if user is not None and user.role in ALL_SITE_ROLES:
+        pending = RegistrationRequest.objects.filter(
+            status=RegistrationRequest.Status.PENDING,
+            verified_at__isnull=False,
+        ).order_by("-created_at")
+        for registration in pending:
+            alerts.append(
+                {
+                    "kind": "registrations_pending",
+                    "level": READY,
+                    "count": 1,
+                    "ref_id": registration.id,
+                    "message": (
+                        f"{registration.first_name} {registration.last_name} "
+                        "asked for an account"
+                    ),
+                }
+            )
 
     return alerts
 
@@ -463,7 +500,7 @@ def daily_order_volume(warehouse=None, date_from=None, date_to=None):
 # ---------------------------------------------------------------------------
 
 
-def notifications(warehouse=None):
+def notifications(warehouse=None, user=None):
     """What the bell in the header shows, and its badge count.
 
     ## What this is, and what it deliberately is not
@@ -491,7 +528,7 @@ def notifications(warehouse=None):
     and when, that is a stored model with per-user read state — a different
     feature, not a bigger version of this one.
     """
-    alerts = needs_attention(warehouse)
+    alerts = needs_attention(warehouse, user=user)
 
     return {
         "unread_count": len(alerts),
@@ -501,6 +538,7 @@ def notifications(warehouse=None):
                 "level": alert["level"],
                 "message": alert["message"],
                 "count": alert["count"],
+                "ref_id": alert.get("ref_id"),
             }
             for alert in alerts
         ],
