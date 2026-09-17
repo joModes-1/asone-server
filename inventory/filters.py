@@ -1,4 +1,4 @@
-"""Query filters for adjustments and transfers.
+"""Query filters for the ledger, adjustments and transfers.
 
 `filterset_fields` gets both of these nearly right and then fails on the two
 questions the screens actually ask.
@@ -18,7 +18,7 @@ so a lookup added for one is not quietly missing from the other.
 
 import django_filters
 
-from .models import InventoryAdjustment, WarehouseTransfer
+from .models import InventoryAdjustment, StockMovement, WarehouseTransfer
 
 
 class PostedFilterMixin(django_filters.FilterSet):
@@ -52,3 +52,31 @@ class WarehouseTransferFilter(PostedFilterMixin):
     class Meta:
         model = WarehouseTransfer
         fields = ("from_warehouse", "to_warehouse", "posted", "date_from", "date_to")
+
+
+class StockMovementFilter(django_filters.FilterSet):
+    """F48 — the audit trail by SKU.
+
+    The four plain fields were already right; the date range is what was
+    missing. "Everything that has ever happened to this SKU" is the correct
+    default for an audit trail and the wrong thing to read on screen, so the
+    history screen opens on a window and needs a bound to ask for.
+
+    Inclusive, and either bound may stand alone, exactly as
+    `InventoryAdjustmentFilter` does — a ledger and the adjustments that
+    write to it should not answer the same question two different ways.
+    """
+
+    date_from = django_filters.DateFilter(field_name="occurred_on", lookup_expr="gte")
+    date_to = django_filters.DateFilter(field_name="occurred_on", lookup_expr="lte")
+
+    class Meta:
+        model = StockMovement
+        fields = (
+            "sku",
+            "warehouse",
+            "movement_type",
+            "document_number",
+            "date_from",
+            "date_to",
+        )

@@ -30,6 +30,7 @@ from orders.services import (
     confirm_receipt,
     pick_order,
     place_order,
+    release_order,
     ship_order,
     shipments_awaiting_confirmation,
 )
@@ -50,6 +51,7 @@ class CompletionSetup(APITestCase):
         self.clerk = make_user("chrisis", Role.SCHOOL_STAFF, school=self.school)
         self.julius = make_user("julius", Role.WAREHOUSE_STAFF, warehouse=self.namayemba)
         self.lead = make_user("sharon", Role.PROGRAM_LEAD)
+        self.finance = make_user("musana", Role.FINANCE)
 
         garment = Garment.objects.create(name="White Shirt")
         GarmentPrice.objects.create(
@@ -67,11 +69,18 @@ class CompletionSetup(APITestCase):
         )
 
     def shipped_order(self, quantity=2):
+        """An order that has been all the way out of the door.
+
+        Released on the way past: a shipped order has necessarily been
+        picked, and the warehouse cannot pick one nobody has paid for
+        (`REQUIRE_RELEASE_BEFORE_PICK`).
+        """
         self.stock(20)
         order = place_order(
             school=self.school, student_name="Miriam Achieng", order_date=ORDERED_ON,
             skus=[{"sku": self.shirt, "quantity": quantity}], created_by=self.clerk,
         )
+        order = release_order(order, released_by=self.finance)
         shipment = ship_order(
             pick_order(order, picked_by=self.julius),
             shipped_by=self.julius, shipped_on=SHIPPED_ON,

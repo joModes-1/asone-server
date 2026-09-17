@@ -31,6 +31,7 @@ from orders.services import (
     cancel_order,
     pick_order,
     place_order,
+    release_order,
     ship_order,
 )
 
@@ -87,6 +88,8 @@ class ShippingSetup(APITestCase):
             skus=[{"sku": self.shirt, "quantity": quantity}],
             created_by=self.clerk,
         )
+        # Paid for before the shelf is touched — picking requires it now.
+        order = release_order(order, released_by=self.finance)
         return pick_order(order, picked_by=self.julius)
 
 
@@ -147,6 +150,7 @@ class StockLeavesAtShip(ShippingSetup):
             skus=[{"sku": self.socks, "quantity": 1}],
             created_by=self.clerk,
         )
+        second_order = release_order(second_order, released_by=self.finance)
         second = ship_order(
             pick_order(second_order, picked_by=self.julius), shipped_by=self.julius
         )
@@ -177,6 +181,7 @@ class WhatShipsIsWhatWasReserved(ShippingSetup):
             skus=[{"sku": self.socks, "quantity": 4}],
             created_by=self.clerk,
         )
+        order = release_order(order, released_by=self.finance)
         picked = pick_order(order, picked_by=self.julius)
         self.assertEqual(stock_level(self.socks, self.warehouse), 0)
 

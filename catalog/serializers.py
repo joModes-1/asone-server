@@ -96,6 +96,7 @@ class SchoolSerializer(serializers.ModelSerializer):
             "level",
             "level_display",
             "address",
+            "student_count",
             "primary_warehouse",
             "primary_warehouse_name",
             "is_active",
@@ -131,13 +132,19 @@ class GarmentSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            # The real, stored code — not something a client should guess.
+            # Every SKU beneath this garment is numbered `<code>-<size>`, so
+            # a screen that previews a SKU number needs the genuine one.
+            "code",
             "school_level",
             "school_level_display",
             "colour",
+            "colour_hex",
             "is_active",
             "current_price",
             "sku_count",
         )
+        read_only_fields = ("code",)
 
     def validate(self, attrs):
         """Reject a garment that already exists at the same school level.

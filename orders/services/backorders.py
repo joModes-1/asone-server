@@ -78,12 +78,25 @@ def pick_available(order, *, picked_by):
     Refused if nothing at all is available — that is not a partial pick, it
     is an order the warehouse cannot start, and writing a backorder for the
     whole thing while marking the order Picked would be a lie.
+
+    **The payment gate applies here too.** `REQUIRE_RELEASE_BEFORE_PICK` is
+    checked against the same rule `pick_order()` uses, because a gate on one
+    door and not the other is not a gate: an unpaid order refused a full pick
+    could simply be part-picked instead, reserving the stock and raising
+    backorders against an invoice nobody has paid.
     """
     from inventory.models import MovementType, StockStatus
     from inventory.services import average_unit_value, post_movement
 
+    from .fulfilment import REQUIRE_RELEASE_BEFORE_PICK
+
     if order.status == OrderStatus.CANCELLED:
         raise NothingToPick(f"{order.number} is cancelled.")
+    if REQUIRE_RELEASE_BEFORE_PICK and order.status == OrderStatus.HOLD:
+        raise NothingToPick(
+            f"{order.number} has not been paid for. An order must be released "
+            "before the warehouse picks it."
+        )
     if order.status in (OrderStatus.PICKED, OrderStatus.SHIPPED):
         raise NothingToPick(f"{order.number} has already been picked.")
 

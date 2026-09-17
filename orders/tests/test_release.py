@@ -117,8 +117,15 @@ class ReleasingAnOrder(ReleaseSetup):
             release_order(order, released_by=self.finance)
 
     def test_a_picked_order_cannot_be_released(self):
+        """Releasing twice would restate when the money arrived.
+
+        Getting to PICKED now takes a release of its own — the warehouse
+        cannot pick an unpaid order — so this releases, picks, and then
+        checks the second release is refused.
+        """
         self.stock(10)
-        order = pick_order(self.an_order(), picked_by=self.warehouse_staff)
+        order = release_order(self.an_order(), released_by=self.finance)
+        order = pick_order(order, picked_by=self.warehouse_staff)
 
         with self.assertRaises(CannotRelease):
             release_order(order, released_by=self.finance)
@@ -136,24 +143,22 @@ class ReleasingClosesTheDoorOnCancelling(ReleaseSetup):
 
 
 class PickingAndTheReleaseGate(ReleaseSetup):
-    """`REQUIRE_RELEASE_BEFORE_PICK` is a placeholder for Q2, not a decision.
+    """`REQUIRE_RELEASE_BEFORE_PICK` — **on**, since 17 September 2026.
 
-    Both branches are proven here so that whoever flips it can see exactly
-    what changes, and so the current behaviour is a recorded choice rather
-    than an accident.
+    AsOne's chart puts payment before fulfilment, so a warehouse picking an
+    invoice nobody has paid was always wrong. It stood only because nothing
+    could reach RELEASED when F39 was written; `release_order()` closed that
+    gap, and this is the flag catching up with it.
+
+    Both branches stay proven. The off branch is kept because turning the
+    gate back off is the fallback if Q2's answer makes releasing impractical
+    — if "School Monitor" turns out to be a person who cannot be reached
+    before the van leaves, AsOne may prefer picking to carry on without it.
+    Whoever makes that call should be able to see exactly what it changes.
     """
 
-    def test_by_default_an_unpaid_order_can_still_be_picked(self):
-        """Today's behaviour, and it is wrong on AsOne's chart — a warehouse
-        should not pick an invoice nobody has paid. It stands because
-        nothing could reach RELEASED when F39 was written."""
-        self.stock(10)
-
-        order = pick_order(self.an_order(), picked_by=self.warehouse_staff)
-        self.assertEqual(order.status, OrderStatus.PICKED)
-
-    @mock.patch("orders.services.fulfilment.REQUIRE_RELEASE_BEFORE_PICK", True)
-    def test_with_the_gate_on_an_unpaid_order_is_refused(self):
+    def test_an_unpaid_order_cannot_be_picked(self):
+        """The gate. A warehouse may not pick an invoice nobody has paid."""
         from orders.services import OrderCannotBePicked
 
         self.stock(10)
@@ -161,13 +166,73 @@ class PickingAndTheReleaseGate(ReleaseSetup):
         with self.assertRaises(OrderCannotBePicked):
             pick_order(self.an_order(), picked_by=self.warehouse_staff)
 
-    @mock.patch("orders.services.fulfilment.REQUIRE_RELEASE_BEFORE_PICK", True)
-    def test_with_the_gate_on_a_released_order_still_picks(self):
+    def test_the_refusal_says_what_to_do_about_it(self):
+        """A clerk reading this is not the person who can fix it, so the
+        message has to name the missing step rather than just refuse."""
+        from orders.services import OrderCannotBePicked
+
+        self.stock(10)
+
+        with self.assertRaises(OrderCannotBePicked) as refusal:
+            pick_order(self.an_order(), picked_by=self.warehouse_staff)
+
+        self.assertIn("has not been paid for", str(refusal.exception))
+        self.assertIn("released", str(refusal.exception))
+
+    def test_a_released_order_picks(self):
+        """The other half: releasing is the only thing standing in the way,
+        so a released order goes through unchanged."""
         self.stock(10)
         order = release_order(self.an_order(), released_by=self.finance)
 
         picked = pick_order(order, picked_by=self.warehouse_staff)
         self.assertEqual(picked.status, OrderStatus.PICKED)
+
+    def test_nothing_is_reserved_when_the_gate_refuses(self):
+        """The refusal comes before the ledger, not after it. A gate that
+        reserved stock and then refused would hold units against an order
+        that cannot be picked, and nothing would ever give them back."""
+        from inventory.services import stock_level
+        from orders.services import OrderCannotBePicked
+
+        self.stock(10)
+
+        with self.assertRaises(OrderCannotBePicked):
+            pick_order(self.an_order(), picked_by=self.warehouse_staff)
+
+        self.assertEqual(stock_level(self.sku, self.warehouse), 10)
+
+    def test_an_unpaid_order_cannot_be_part_picked_either(self):
+        """The second door, and the reason the gate is on both.
+
+        `pick_available` fills what it can and raises backorders for the
+        rest. Gated on one door only, an unpaid order refused a full pick
+        could simply be part-picked instead — reserving stock and raising
+        backorders against an invoice nobody has paid.
+        """
+        from orders.services import NothingToPick, pick_available
+
+        self.stock(10)
+
+        with self.assertRaises(NothingToPick):
+            pick_available(self.an_order(), picked_by=self.warehouse_staff)
+
+    def test_a_released_order_can_be_part_picked(self):
+        from orders.services import pick_available
+
+        self.stock(1)  # the order needs 2
+        order = release_order(self.an_order(), released_by=self.finance)
+
+        order, backorders = pick_available(order, picked_by=self.warehouse_staff)
+        self.assertEqual(len(backorders), 1)
+
+    @mock.patch("orders.services.fulfilment.REQUIRE_RELEASE_BEFORE_PICK", False)
+    def test_with_the_gate_off_an_unpaid_order_picks(self):
+        """The fallback branch, kept proven — see the class docstring."""
+        self.stock(10)
+
+        order = pick_order(self.an_order(), picked_by=self.warehouse_staff)
+        self.assertEqual(order.status, OrderStatus.PICKED)
 
 
 class WhoMayRelease(ReleaseSetup):

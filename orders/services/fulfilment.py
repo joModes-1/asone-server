@@ -58,7 +58,7 @@ class OrderCannotBePicked(Exception):
 #: To turn it on: set True, then decide what happens to orders already on
 #: Hold. Both branches are covered in
 #: `orders/tests/test_release.py::PickingAndTheReleaseGate`.
-REQUIRE_RELEASE_BEFORE_PICK = False
+REQUIRE_RELEASE_BEFORE_PICK = True
 
 
 def check_availability(order, warehouse=None):

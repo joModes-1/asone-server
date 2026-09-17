@@ -33,7 +33,11 @@ from catalog.models import Warehouse
 from catalog.services import PriceNotSet
 
 from . import reports, services
-from .filters import InventoryAdjustmentFilter, WarehouseTransferFilter
+from .filters import (
+    InventoryAdjustmentFilter,
+    StockMovementFilter,
+    WarehouseTransferFilter,
+)
 from .models import (
     InventoryAdjustment,
     ReasonCode,
@@ -201,7 +205,10 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     # F48 gives Finance "All sites" on the audit trail.
     permission_classes = [*AUTHENTICATED, MasterDataAccess]
     read_roles = (Role.WAREHOUSE_STAFF, Role.FINANCE)
-    filterset_fields = ("sku", "warehouse", "movement_type", "document_number")
+    # A declared filterset rather than `filterset_fields`, for the date
+    # range: "everything that ever happened to this SKU" is the right default
+    # for an audit trail and the wrong thing to put on a screen.
+    filterset_class = StockMovementFilter
 
     def get_queryset(self):
         queryset = StockMovement.objects.select_related(
