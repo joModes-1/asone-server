@@ -11,6 +11,7 @@ urls.py and this file just mounts it.
     /api/procurement/ group and production orders, receipts
     /api/inventory/   the stock ledger and derived stock levels
     /api/orders/      school orders — the point of sale
+    /api/organization/ the Settings screen — one row, org-wide
     /api/schema/  the OpenAPI document
     /api/docs/    interactive API documentation
 """
@@ -44,6 +45,7 @@ urlpatterns = [
     path("api/inventory/", include("inventory.urls")),
     path("api/orders/", include("orders.urls")),
     path("api/dashboard/", include("dashboard.urls")),
+    path("api/organization/", include("organization.urls")),
     path("api/health/", HealthView.as_view(), name="health"),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

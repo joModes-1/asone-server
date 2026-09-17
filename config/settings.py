@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "orders",
     "dashboard",
     "procurement",
+    "organization",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

@@ -227,10 +227,20 @@ def needs_attention(warehouse=None, user=None):
     the way the rest are, and not everyone who can see this list is allowed
     to act on it (see below). Omitted when no user is passed, which keeps
     every existing caller — and every test — behaving exactly as before.
+
+    Three kinds — low_stock, receipts_unreconciled, backorders_fillable —
+    are also switched off org-wide by the Settings screen's System Alerts
+    toggles. This is the only lever that exists for that: there is no
+    per-user notification delivery anywhere in the system to prefer instead
+    (see `notifications()`'s own docstring), so a toggle here removes the
+    row for everyone rather than unsubscribing one person from it.
     """
+    from organization.models import Settings
+
+    alert_settings = Settings.load()
     alerts = []
 
-    low_stock = skus_below_minimum(warehouse)
+    low_stock = skus_below_minimum(warehouse) if alert_settings.low_stock_alerts_enabled else 0
     if low_stock:
         alerts.append(
             {
@@ -261,7 +271,11 @@ def needs_attention(warehouse=None, user=None):
             }
         )
 
-    unreconciled = len(receipts_needing_reconciliation(warehouse))
+    unreconciled = (
+        len(receipts_needing_reconciliation(warehouse))
+        if alert_settings.receipt_discrepancy_alerts_enabled
+        else 0
+    )
     if unreconciled:
         alerts.append(
             {
@@ -272,7 +286,11 @@ def needs_attention(warehouse=None, user=None):
             }
         )
 
-    fillable = len(backorders_ready_to_fill(warehouse))
+    fillable = (
+        len(backorders_ready_to_fill(warehouse))
+        if alert_settings.backorder_allocation_alerts_enabled
+        else 0
+    )
     if fillable:
         alerts.append(
             {
