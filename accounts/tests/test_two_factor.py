@@ -79,16 +79,35 @@ class OnlyPeopleWhoWereAddedGetIn(TwoFactorSetup):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertIn("do not have access", str(response.data).lower())
 
-    def test_a_deactivated_user_is_told_the_same_thing(self):
-        """The same message on purpose — a former employee has no use for
-        the difference between 'never added' and 'removed'."""
+    def test_a_deactivated_user_is_told_they_were_deactivated(self):
+        """Not the same message as a stranger — reversed 16 September 2026.
+
+        This used to return the stranger's sentence deliberately, on the
+        reasoning that a former employee has no use for the difference
+        between "never added" and "removed". In practice the person hitting
+        it is almost never a former employee: it is somebody deactivated by
+        mistake, or during a role change, who is then told to ask Central
+        Office to *create* an account they already have. That is the wrong
+        question to the right person, and it wasted real time.
+
+        The cost is that an address can now be told apart as "was a user
+        here" rather than "never was". That is a smaller leak than the one
+        this system already accepts on purpose — see `user_with_access`,
+        which answers "you do not have access" instead of "wrong password"
+        precisely so somebody who was never added is not left guessing. The
+        user list of a closed system with a few dozen named accounts, rate
+        limiting and a recorded attempt per try is not the secret worth
+        protecting here.
+        """
         self.user.is_active = False
         self.user.save(update_fields=["is_active"])
 
         response = self.password_step()
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertIn("do not have access", str(response.data).lower())
+        said = str(response.data).lower()
+        self.assertIn("deactivated", said)
+        self.assertNotIn("create an account", said)
 
     def test_no_code_is_emailed_to_somebody_with_no_access(self):
         self.password_step(email="stranger@example.com")

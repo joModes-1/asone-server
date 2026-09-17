@@ -18,7 +18,6 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
@@ -212,14 +211,11 @@ class VerifyLoginCodeView(APIView):
         except services.ChallengeUnusable as exc:
             raise DRFValidationError({"code": str(exc)}) from exc
 
-        refresh = RefreshToken.for_user(user)
-        return Response(
-            {
-                "refresh": str(refresh),
-                "access": str(refresh.access_token),
-                "user": UserSerializer(user).data,
-            }
-        )
+        # One account, one session — see services.sign_in_tokens_for. Every
+        # session this account already had is retired here, so signing in on
+        # a second device signs the first one out.
+        tokens = services.sign_in_tokens_for(user)
+        return Response({**tokens, "user": UserSerializer(user).data})
 
 
 @extend_schema(
@@ -334,6 +330,14 @@ class LogoutView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Blacklisting the refresh token alone left the access token working
+        # for up to thirty minutes — so a lead signing somebody else out was
+        # immediate while signing *yourself* out was not, which is the wrong
+        # way round. It matters most on a shared warehouse machine: somebody
+        # signs out, walks away, and the next person at that keyboard has a
+        # live token. The bump ends it on the next request.
+        services.bump_session_epoch(request.user)
+
         return Response(status=status.HTTP_205_RESET_CONTENT)
 
 
@@ -447,7 +451,6 @@ class UserViewSet(viewsets.ModelViewSet):
     # trail points at them, and every stock movement will once the ledger
     # exists. Only LoginAttempt protects a user today, so without this an
     # account that had never signed in could be erased.
-    http_method_names = ["get", "post", "patch", "put", "head", "options"]
     http_method_names = ["get", "post", "patch", "head", "options"]
 
     def get_serializer_class(self):
@@ -513,7 +516,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     password=typed_password, **fields
                 )
                 services.send_email_verification(
-                    user, sent_by=request.user, request=request, password=password
+                    user, sent_by=request.user, request=request
                 )
         except OSError as exc:
             # Anything the mail library raises for "could not send" —
@@ -729,17 +732,12 @@ class RegistrationRequestCreateView(APIView):
         serializer = RegistrationRequestCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        try:
-            with transaction.atomic():
-                registration = services.request_registration(
-                    **serializer.validated_data, http_request=request
-                )
-        except OSError as exc:
-            raise ServiceUnavailable(
-                "The request was not saved because the confirmation email "
-                "could not be sent. Nothing has been saved — try again, and "
-                "tell whoever runs the system if it keeps happening."
-            ) from exc
+        # No email is sent here any more, so there is nothing for a mail
+        # failure to roll back — see services.request_registration.
+        with transaction.atomic():
+            registration = services.request_registration(
+                **serializer.validated_data, http_request=request
+            )
 
         return Response(
             RegistrationRequestSerializer(registration).data,
@@ -836,8 +834,6 @@ class RegistrationRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 )
         except services.RegistrationAlreadyDecided as exc:
             raise self._conflict(exc) from exc
-        except services.RegistrationEmailNotVerified as exc:
-            raise DRFValidationError({"detail": str(exc)}) from exc
         except OSError as exc:
             raise ServiceUnavailable(
                 "The account was not created because the confirmation email "

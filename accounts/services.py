@@ -19,6 +19,9 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from . import permissions as perms
+from django.db.models import F
+
+from .authentication import stamp_session_epoch
 from .models import EmailVerification, LoginAttempt, LoginChallenge
 
 User = get_user_model()
@@ -29,10 +32,59 @@ User = get_user_model()
 # ---------------------------------------------------------------------------
 
 
-def issue_tokens_for(user) -> dict:
-    """Mint a fresh access/refresh pair for ``user``."""
+@transaction.atomic
+def sign_in_tokens_for(user) -> dict:
+    """Mint a pair for somebody signing in, ending every session they had.
+
+    **One account, one session.** Signing in anywhere retires every refresh
+    token the account holds, so the device that was already signed in stops
+    working. Sign in again there and this one stops instead.
+
+    The rule exists because a shared password is invisible otherwise: two
+    people using one account look exactly like one person, and every
+    transaction in this system records who performed it. With this, sharing
+    is not subtle — the other person is thrown out mid-task and says so.
+
+    ## What "logged out" means in practice, and the gap you cannot close here
+
+    Refresh tokens are rows and are retired immediately. Access tokens are
+    **not** — they are signed, stateless, and nothing consults the database
+    when one is presented. So the other device keeps working until its
+    current access token expires, which is at most ACCESS_TOKEN_LIFETIME
+    (30 minutes), and is then refused when it tries to refresh.
+
+    Closing that last half hour needs a token version on the user checked by
+    a custom authentication class, which is a database read on every single
+    request forever. Not worth it for the risk this addresses: the point is
+    that sharing a password becomes obvious, and being thrown out half an
+    hour later is obvious.
+    """
+    revoke_all_refresh_tokens(user)
+
+    # F-expression rather than `user.session_epoch + 1`: two sign-ins racing
+    # would both read the same number and both write the same one, and the
+    # loser would keep a working session. The database does the addition.
+    bump_session_epoch(user)
+
     refresh = RefreshToken.for_user(user)
+    stamp_session_epoch(refresh, user)
     return {"refresh": str(refresh), "access": str(refresh.access_token)}
+
+
+def bump_session_epoch(user) -> None:
+    """Invalidate every token this account already holds, at once.
+
+    The counterpart to retiring refresh tokens. That stops a session
+    *renewing*; this stops it working. Called wherever sessions are supposed
+    to end — signing in elsewhere, signing out, a lead signing somebody out,
+    a password change, an administrator reset.
+
+    An F-expression rather than `user.session_epoch + 1`: two of these racing
+    would both read the same number and write the same one, and the loser
+    would keep a working session. The database does the addition.
+    """
+    User.objects.filter(pk=user.pk).update(session_epoch=F("session_epoch") + 1)
+    user.refresh_from_db(fields=["session_epoch"])
 
 
 def blacklist_refresh_token(raw_token: str) -> None:
@@ -84,8 +136,11 @@ def change_password(user, new_password: str) -> dict:
     user.must_change_password = False
     user.save(update_fields=["password", "must_change_password"])
 
-    revoke_all_refresh_tokens(user)
-    return issue_tokens_for(user)
+    # The same path a sign-in takes: sessions retired, epoch bumped, the new
+    # pair stamped with it. Changing a password should end every other session
+    # for the same reason signing in does, and a pair minted any other way
+    # would carry no epoch and sit outside the rule entirely.
+    return sign_in_tokens_for(user)
 
 
 # ---------------------------------------------------------------------------
@@ -159,12 +214,10 @@ def create_staff_user(*, password=None, must_change_password=True, **fields):
     ``password`` is what the lead typed. Omit it and one is generated, which
     is the normal path — the lead reads it once and passes it on, and
     `must_change_password` then forces the owner to replace it at first
-    sign-in.
+    sign-in. The password is never emailed to anyone, at any point — it is
+    shown to the lead once, on screen, and that is the only place it exists.
 
-    This function does not email anything itself. Whether the generated
-    password also goes by email — alongside the account, not on its own —
-    is the caller's decision; see `send_email_verification`'s ``password``
-    argument.
+    This function does not email anything itself.
 
     The role/site invariant is checked here rather than trusted, because this
     is reachable from the API, the admin and a management command alike.
@@ -197,10 +250,6 @@ class RegistrationAlreadyDecided(Exception):
     """Raised when approving or declining a request that is not PENDING."""
 
 
-class RegistrationEmailNotVerified(Exception):
-    """Raised when approving a request whose address is unconfirmed."""
-
-
 REGISTRATION_STALE_CODE = (
     "That code is no longer valid. Submit the registration form again to "
     "get a new one."
@@ -209,14 +258,35 @@ REGISTRATION_STALE_CODE = (
 
 @transaction.atomic
 def request_registration(*, first_name, last_name, email, phone_number="", http_request=None):
-    """Record a request for an account, and immediately email a code
-    proving the address belongs to whoever is asking. Open to anyone —
-    there is no user yet to authenticate as.
+    """Record a request for an account. Open to anyone — there is no user yet
+    to authenticate as.
+
+    ---------------------------------------------------------------------
+    No email code
+    ---------------------------------------------------------------------
+    Asking for access used to email a six-digit code the registrant had to
+    type back before a lead could see the request at all. Removed 15
+    September 2026 at ERA 92's request, and it was doing less than it looked
+    like it was:
+
+    **A lead approves every request by hand.** Nothing is created until one
+    does. The code proved the address was reachable, which is worth knowing —
+    but it is also the first thing that happens after approval, when the
+    account's own credentials are sent to that address. An address nobody
+    holds fails there, before anyone can sign in with it.
+
+    **It lost real requests.** A code that landed in spam, or a registrant
+    who closed the tab, left a request no lead could see and no one could
+    resend — it did not appear in the pending list, so nobody knew to chase
+    it.
+
+    The verification model and `verify_registration_email()` are left in
+    place: existing rows carry a `verified_at` worth keeping, and a future
+    self-service flow may want it back. Nothing calls it on this path.
 
     Does not check whether the address already belongs to a `User` or an
     earlier request: that is a lead's call to make when reviewing the list,
-    not a reason to refuse the request outright (an old, unconfirmed
-    address should not block someone from asking again).
+    not a reason to refuse the request outright.
     """
     from .models import RegistrationRequest
 
@@ -228,8 +298,6 @@ def request_registration(*, first_name, last_name, email, phone_number="", http_
     )
     registration.full_clean()
     registration.save()
-
-    send_registration_verification(registration, request=http_request)
 
     return registration
 
@@ -339,22 +407,16 @@ def verify_registration_email(email, code):
 
 @transaction.atomic
 def approve_registration(request, *, role, warehouse=None, school=None, decided_by, http_request=None):
-    """Turn a pending, email-verified request into a real account.
+    """Turn a pending request into a real account.
 
-    Everything below the verification check **is** `create_staff_user` plus
-    the confirmation email — approval does not invent a second way to
-    create an account, it is the moment a lead supplies the one thing a
+    Everything below the status check **is** `create_staff_user` plus
+    stamping the address confirmed — approval does not invent a second way
+    to create an account, it is the moment a lead supplies the one thing a
     registrant never could: the role.
     """
     if request.status != request.Status.PENDING:
         raise RegistrationAlreadyDecided(
             f"This request was already {request.status.lower()} and cannot be decided again."
-        )
-
-    if not request.is_email_verified:
-        raise RegistrationEmailNotVerified(
-            "This address has not been confirmed yet — the registrant must "
-            "enter the code emailed to them before this can be approved."
         )
 
     user, password = create_staff_user(
@@ -366,7 +428,23 @@ def approve_registration(request, *, role, warehouse=None, school=None, decided_
         warehouse=warehouse,
         school=school,
     )
-    send_email_verification(user, sent_by=decided_by, request=http_request, password=password)
+
+    # Approving **is** the confirmation.
+    #
+    # Two things used to sit here and both have gone. The first was a guard
+    # refusing to approve a request whose address nobody had verified —
+    # which, once the registration code was removed, meant no request could
+    # ever be approved. The second emailed the new account a verification
+    # code, leaving `email_verified_at` null until they typed it, so the
+    # person a lead had just approved was told at sign-in that their address
+    # "has not been confirmed yet".
+    #
+    # A lead looked at this person and decided they get an account. Their
+    # credentials are emailed to that address by `create_staff_user`, so an
+    # address nobody holds fails there — before anyone can sign in with it.
+    # A second code proves nothing the first email does not.
+    user.email_verified_at = timezone.now()
+    user.save(update_fields=["email_verified_at"])
 
     request.status = request.Status.APPROVED
     request.decided_at = timezone.now()
@@ -416,7 +494,12 @@ def set_user_password(user, *, new_password=None, must_change_password=True) -> 
 
     # Whoever knew the old password — including whoever prompted the change —
     # must not keep a working session.
+    # Immediate, not "within thirty minutes" — see force_sign_out. An
+    # administrator resetting a password is usually doing it because the old
+    # one is compromised, so leaving the old sessions alive on their current
+    # access tokens defeats the point.
     revoke_all_refresh_tokens(user)
+    bump_session_epoch(user)
 
     return new_password
 
@@ -441,8 +524,19 @@ def force_sign_out(user) -> int:
     """Retire every session belonging to `user`, leaving the account usable.
 
     For a lost or stolen device, where the person still works here.
+
+    The epoch bump is what makes this immediate. Retiring refresh tokens alone
+    only stops the device *renewing* — it would carry on with the access token
+    already in its hand for up to thirty minutes, which is not what anybody
+    clicking "sign out everywhere" about a lost laptop expects. Bumping the
+    epoch means the very next request that laptop makes is refused.
+
+    Returns the number of refresh tokens retired. Zero is a real answer worth
+    showing: it means they were not signed in anywhere.
     """
-    return revoke_all_refresh_tokens(user)
+    retired = revoke_all_refresh_tokens(user)
+    bump_session_epoch(user)
+    return retired
 
 
 # ---------------------------------------------------------------------------
@@ -618,11 +712,24 @@ def user_with_access(email):
     the user list stops being a known quantity and the trade stops paying.
     """
     user = User.objects.filter(email__iexact=(email or "").strip()).first()
-    if user is None or not user.is_active:
+
+    if user is None:
         raise NoAccess(
             "You do not have access to this system. Ask AsOne Central Office "
             "to create an account for you."
         )
+
+    # A deactivated account is not the same as no account, and telling
+    # somebody who has worked here for a year to ask for an account to be
+    # created sends them to the wrong person with the wrong question. They
+    # need reactivating, not creating.
+    if not user.is_active:
+        raise NoAccess(
+            "This account has been deactivated, so it cannot sign in. Ask "
+            "AsOne Central Office to reactivate it — nothing you have done "
+            "is lost."
+        )
+
     return user
 
 
@@ -773,13 +880,11 @@ def send_email_verification(user, *, sent_by=None, request=None, password=None):
     Any earlier unused code is retired first, so re-sending does not leave
     two working codes.
 
-    ``password`` is opt-in and normally omitted — the password reaches the
-    person through their lead, by a different route, so that proving the
-    address and holding the password are two separate facts. Pass it only
-    when the caller has decided the password should be emailed as well;
-    when given, it rides in this same message rather than a second one,
-    since two emails landing in one inbox seconds apart offers no more
-    protection than one.
+    ``password`` exists for the email body's fallback wording and should not
+    be passed a real value by anything new — the password is shown to the
+    lead once, on screen, and never emailed or shown to the account's owner.
+    Proving the address and holding the password are two separate facts,
+    and putting both in one inbox would make this step prove nothing.
     """
     EmailVerification.objects.filter(user=user, consumed_at__isnull=True).update(
         consumed_at=timezone.now()
@@ -805,7 +910,7 @@ def send_verification_email(user, code, *, sent_by=None, password=None):
     must fail loudly — an account whose address was never confirmed cannot
     be signed into, so reporting success would be a lie.
 
-    ``password`` is only ever passed by an explicit choice upstream — see
+    ``password`` should not be passed a real value — see
     `send_email_verification`.
     """
     days = settings.INVITATION_TTL_DAYS

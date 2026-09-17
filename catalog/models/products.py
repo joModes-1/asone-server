@@ -39,6 +39,21 @@ class Garment(models.Model):
         BOTH = "BOTH", "Both"
 
     name = models.CharField(max_length=120, help_text='For example "White Shirt".')
+
+    # The readable half of every SKU code beneath this garment: BTU-10 is
+    # this garment's BTU and size 10. Derived from the name on first save and
+    # then frozen, because it is printed on shelf labels and pick lists — a
+    # code that moved when somebody tidied a name would stop matching the
+    # labels already on the shelves.
+    code = models.CharField(
+        max_length=8,
+        unique=True,
+        blank=True,
+        help_text=(
+            "Short code used in SKU numbers, for example BTU. Filled in from "
+            "the name if left blank, and never changed afterwards."
+        ),
+    )
     school_level = models.CharField(
         max_length=4,
         choices=SchoolLevel.choices,
@@ -68,6 +83,17 @@ class Garment(models.Model):
                 Lower("name"), "school_level", name="unique_garment_per_level"
             )
         ]
+
+    def save(self, *args, **kwargs):
+        # Assigned here rather than in a signal, so it is visible where it
+        # happens, and only when missing — see the field comment for why an
+        # existing code must never move.
+        if not self.code:
+            from catalog.services import garment_code
+
+            self.code = garment_code(self)
+
+        super().save(*args, **kwargs)
 
     def __str__(self):
         if self.school_level == self.SchoolLevel.BOTH:

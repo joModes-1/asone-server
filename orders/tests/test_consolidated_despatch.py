@@ -517,3 +517,65 @@ class TheBacklogPages(ThePickingBacklog):
         second = self.client.get(self.url, {"page_size": 2, "page": 2}).data
 
         self.assertEqual(len(second["orders"]["results"]), 1)
+
+
+class TheBacklogStatusFilter(ThePickingBacklog):
+    """Narrowing the backlog to one bucket.
+
+    The backlog holds exactly two statuses — released and picked — so the
+    filter offers exactly two and neither is invented. The warehouse screen
+    needs it because the two are different work: what is still on the shelves
+    versus what is reserved and waiting for a van.
+    """
+
+    def test_released_shows_only_what_is_still_to_pick(self):
+        waiting = self.released("Still Waiting")
+        self.picked("Already Picked")
+        self.client.force_authenticate(self.julius)
+
+        body = self.client.get(self.url, {"status": "RELEASED"}).data
+
+        self.assertEqual(body["orders"]["count"], 1)
+        self.assertEqual(body["orders"]["results"][0]["number"], waiting.number)
+
+    def test_picked_shows_only_what_is_off_the_shelf(self):
+        self.released("Still Waiting")
+        done = self.picked("Already Picked")
+        self.client.force_authenticate(self.julius)
+
+        body = self.client.get(self.url, {"status": "PICKED"}).data
+
+        self.assertEqual(body["orders"]["count"], 1)
+        self.assertEqual(body["orders"]["results"][0]["number"], done.number)
+
+    def test_no_filter_shows_both(self):
+        self.released("Still Waiting")
+        self.picked("Already Picked")
+        self.client.force_authenticate(self.julius)
+
+        self.assertEqual(self.client.get(self.url).data["orders"]["count"], 2)
+
+    def test_the_tiles_ignore_the_filter(self):
+        """They are the totals the filter is chosen from.
+
+        A tile that changed when you narrowed the table would take away the
+        only thing on screen saying what you had narrowed.
+        """
+        self.released("Still Waiting")
+        self.picked("Already Picked")
+        self.client.force_authenticate(self.julius)
+
+        summary = self.client.get(self.url, {"status": "PICKED"}).data["summary"]
+
+        self.assertEqual(summary["ready_to_pick"], 1)
+        self.assertEqual(summary["picked"], 1)
+
+    def test_a_status_the_backlog_cannot_hold_is_refused(self):
+        """Answering with an empty page would look like an idle warehouse."""
+        self.released("Still Waiting")
+        self.client.force_authenticate(self.julius)
+
+        response = self.client.get(self.url, {"status": "SHIPPED"})
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("status", response.data)

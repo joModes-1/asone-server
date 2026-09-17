@@ -136,7 +136,27 @@ class LoginSerializer(TokenObtainPairSerializer):
 
     Inactive accounts are rejected by Django's own authentication backend, so
     deactivating a user is enough to lock them out at the next login.
+
+    ## The refusal wording
+
+    simplejwt's default is "No active account found with the given
+    credentials", which is wrong here in two ways. It is not true — the view
+    has already established through `user_with_access` that the account
+    exists and is active, so by the time this serializer runs the *only*
+    thing that can be wrong is the password. And it reads as a system fault
+    rather than a typo, so people retype the same password expecting a
+    different answer.
+
+    Saying "that password is not right" gives nothing away that the step
+    before has not already given away.
     """
+
+    default_error_messages = {
+        "no_active_account": (
+            "That password is not right. Check it and try again, or ask "
+            "AsOne Central Office to reset it for you."
+        )
+    }
 
     def validate(self, attrs):
         data = super().validate(attrs)
@@ -201,12 +221,42 @@ class PasswordChangeSerializer(serializers.Serializer):
     The current password is required even though the request is already
     authenticated. A stolen access token is then not enough to lock the real
     owner out of their own account.
+
+    **Except on the first-time gate.** An account with `must_change_password`
+    set may omit it, because there the field defends nothing and costs a
+    retype at the moment a new user is least sure of themselves:
+
+      * They typed that exact password on the sign-in screen seconds ago.
+        There is no other way to have reached this request.
+      * While the flag is set the server refuses every other endpoint, so a
+        session in the wrong hands can do precisely one thing — set a
+        password. The only attack the field stops is somebody reaching an
+        unlocked screen inside that window.
+      * It stops nothing at all with respect to the lead who created the
+        account: they chose the one-time password and could sign in as that
+        person directly.
+
+    Sending it anyway is still honoured and still checked, so a client that
+    has the password loses nothing by passing it.
     """
 
-    current_password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    current_password = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        style={"input_type": "password"},
+        help_text=(
+            "Required unless the account is on the first-time password gate "
+            "(`must_change_password`), where it may be omitted."
+        ),
+    )
     new_password = serializers.CharField(write_only=True, style={"input_type": "password"})
 
     def validate_current_password(self, value):
+        """Checked whenever one is sent, gate or no gate."""
+        if not value:
+            return value
+
         user = self.context["request"].user
         if not user.check_password(value):
             raise serializers.ValidationError("That is not your current password.")
@@ -225,7 +275,17 @@ class PasswordChangeSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        if attrs["current_password"] == attrs["new_password"]:
+        user = self.context["request"].user
+        current = attrs.get("current_password")
+
+        if not current and not user.must_change_password:
+            raise serializers.ValidationError(
+                {"current_password": "This field is required."}
+            )
+
+        # Compared against the stored hash rather than against the submitted
+        # current password, so the rule holds whether or not one was sent.
+        if user.check_password(attrs["new_password"]):
             raise serializers.ValidationError(
                 {"new_password": "The new password must be different from the current one."}
             )

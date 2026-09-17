@@ -223,6 +223,99 @@ def next_sku_number() -> str:
         return str(cursor.fetchone()[0])
 
 
+# ---------------------------------------------------------------------------
+# Readable codes
+# ---------------------------------------------------------------------------
+
+#: How long a garment's stem may be. Three letters keeps the whole SKU code
+#: short enough to sit in a table column and be read off a shelf label.
+GARMENT_CODE_LENGTH = 3
+
+
+def _stem(name: str) -> str:
+    """The letters a garment code is built from.
+
+    One initial per word, padded from the last word until it reaches three:
+
+        "Blue Tunic"     -> B, T   -> BTU
+        "Grey Trousers"  -> G, T   -> GTR
+        "Jumper"         -> J      -> JUM
+
+    Digits and punctuation are dropped, so "E2E Tunic" gives ETU rather than
+    E2T — a code is read aloud across a warehouse, and letters survive that
+    better than a name's own punctuation does.
+    """
+    words = [
+        "".join(character for character in word if character.isalpha())
+        for word in name.split()
+    ]
+    words = [word for word in words if word]
+    if not words:
+        return "SKU"
+
+    stem = "".join(word[0] for word in words)
+    # Short of three, borrow the rest from the last word: "BT" + "unic".
+    tail = words[-1][1:]
+    while len(stem) < GARMENT_CODE_LENGTH and tail:
+        stem, tail = stem + tail[0], tail[1:]
+
+    return stem[:GARMENT_CODE_LENGTH].upper().ljust(GARMENT_CODE_LENGTH, "X")
+
+
+def garment_code(garment, *, taken=None) -> str:
+    """A short, unique, permanent code for a garment.
+
+    Two garments can legitimately produce the same stem — "White Shirt" on
+    the Primary list and "White Shirt" on the High School list are two
+    garments, and "Grey Shorts" and "Grey Skirt" are two more. The first to
+    be created keeps the bare stem and the next takes a digit: GSH, GSH2,
+    GSH3. Deterministic, and short enough to stay readable.
+
+    `taken` lets a migration pass the codes it has assigned so far without
+    each one needing its own query.
+    """
+    from catalog.models import Garment
+
+    stem = _stem(garment.name)
+
+    if taken is None:
+        taken = set(
+            Garment.objects.exclude(pk=garment.pk)
+            .exclude(code="")
+            .values_list("code", flat=True)
+        )
+
+    if stem not in taken:
+        return stem
+
+    suffix = 2
+    while f"{stem}{suffix}" in taken:
+        suffix += 1
+    return f"{stem}{suffix}"
+
+
+def sku_code(garment, size) -> str:
+    """The code printed on shelf labels, pick lists and packing lists.
+
+    `GTR-14`: the garment's code, then the size. Both halves are already
+    unique on their own and a SKU is one garment in one size, so the pair is
+    unique without needing a counter — the `unique_sku_per_garment_size`
+    constraint is the same statement in the database.
+
+    This replaced a bare sequence number. `100015` was unique and told a
+    clerk holding the garment nothing; they could not check a label against
+    a pick list without looking the number up first.
+
+    Non-alphanumerics are stripped from the size, so the size named "E2E-12"
+    does not put a second hyphen in the code and make it look like three
+    parts instead of two.
+    """
+    size_token = "".join(
+        character for character in size.name if character.isalnum()
+    ).upper()
+    return f"{garment.code}-{size_token}"
+
+
 def price_for_sku(sku, on_date=None):
     """The price of a SKU, which is the price of its garment.
 

@@ -324,14 +324,13 @@ def needs_attention(warehouse=None, user=None):
     # straight into that person's review, the same way an order or a receipt
     # would if this list linked to records instead of screens.
     #
-    # Unverified requests are excluded: a lead cannot approve a request whose
-    # email address nobody has proved they hold, so surfacing one would
-    # present work that cannot be done. It appears the moment they enter
-    # their code.
+    # Every pending request, verified or not. Asking for access no longer
+    # emails a code (see accounts.services.request_registration), so
+    # `verified_at` stays null forever on a new request — filtering on it
+    # here would hide every request from the only people who can act on one.
     if has_role(user, *ALL_SITE_ROLES):
         pending = RegistrationRequest.objects.filter(
             status=RegistrationRequest.Status.PENDING,
-            verified_at__isnull=False,
         ).order_by("-created_at")
         for registration in pending:
             alerts.append(

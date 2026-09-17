@@ -59,6 +59,13 @@ class User(AbstractUser):
     #: Set when the person has entered the code emailed to this address.
     #: Null means the address is unproven and sign-in is refused — a
     #: mistyped address must not become a working account.
+    #: Bumped every time this account signs in. The number is copied into the
+    #: token, and `SingleSessionJWTAuthentication` refuses any token carrying
+    #: an older one — which is what makes "one account, one session" take
+    #: effect at once rather than whenever the old access token happens to
+    #: expire. See accounts/authentication.py.
+    session_epoch = models.PositiveIntegerField(default=0)
+
     email_verified_at = models.DateTimeField(null=True, blank=True)
 
     must_change_password = models.BooleanField(

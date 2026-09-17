@@ -134,18 +134,34 @@ DATABASES = {
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
+# Applied wherever a person chooses a password: the self-service change, a
+# lead typing one on create, and an administrator resetting one. Generated
+# passwords skip these by design — 12 characters from a 56-character
+# alphabet is stronger than anything a person picks, and the account carries
+# `must_change_password` so it is temporary anyway.
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
     },
     {
+        # 10, not Django's default 8. Eight characters is inside reach of an
+        # offline guess against a stolen hash, and every password in this
+        # project's own tests is a passphrase well past ten, so the cost of
+        # asking is low.
         'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': 10},
     },
     {
         'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
     },
     {
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+    {
+        # Django's common list is generic and does not know this is AsOne in
+        # Uganda. Probing on 16 September 2026 showed `asone123`, `AsOne2026`
+        # and `Uganda123` all passing — see accounts/validators.py.
+        'NAME': 'accounts.validators.SiteWordValidator',
     },
 ]
 
@@ -184,7 +200,10 @@ REST_FRAMEWORK = {
     # JWT only. There is no browser session for the React app to fall back on,
     # so an unauthenticated request should fail rather than quietly succeed.
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # simplejwt's class, plus the one-account-one-session check. It reads
+        # a field on the user row simplejwt has already loaded, so it adds no
+        # query — see accounts/authentication.py.
+        "accounts.authentication.SingleSessionJWTAuthentication",
     ),
     # Locked down by default. Endpoints open up explicitly, never by accident.
     # The second class blocks anyone still on an administrator-issued password

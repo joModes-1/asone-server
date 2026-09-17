@@ -88,21 +88,31 @@ class PendingRegistrationsAreSurfaced(AttentionSetup):
         self.assertEqual({r["ref_id"] for r in rows}, {r.id for r in requests})
         self.assertTrue(all(r["count"] == 1 for r in rows))
 
-    def test_an_unverified_request_is_not_shown(self):
-        """A lead cannot approve a request whose address nobody has proved
-        they hold, so showing it would be work that cannot be done."""
+    def test_an_unverified_request_is_shown(self):
+        """Reversed 15 September 2026, with the email code itself.
+
+        This used to assert the opposite: a request nobody had verified was
+        hidden, on the reasoning that a lead could not act on an address
+        nobody had proved they hold. In practice it hid real requests — a
+        code in a spam folder left a request no lead could see and nobody
+        could resend — and the address is proved anyway at the next step,
+        when approval emails that account its own credentials.
+
+        See accounts.services.request_registration.
+        """
         self.request_account("grace@example.com", verified=False)
 
-        self.assertNotIn("registrations_pending", self.kinds(user=self.sharon))
-
-    def test_it_appears_once_they_enter_their_code(self):
-        request = self.request_account("grace@example.com", verified=False)
-        self.assertNotIn("registrations_pending", self.kinds(user=self.sharon))
-
-        request.verified_at = timezone.now()
-        request.save(update_fields=["verified_at"])
-
         self.assertIn("registrations_pending", self.kinds(user=self.sharon))
+
+    def test_verified_and_unverified_are_counted_alike(self):
+        """Each gets its own row — see `test_several_read_correctly` — so
+        "counted alike" means both appear, not that they share one count."""
+        unverified = self.request_account("grace@example.com", verified=False)
+        verified = self.request_account("amina@example.com", verified=True)
+
+        rows = self.registration_rows(user=self.sharon)
+
+        self.assertEqual({r["ref_id"] for r in rows}, {unverified.id, verified.id})
 
     def test_a_decided_request_drops_off(self):
         request = self.request_account("grace@example.com", verified=True)

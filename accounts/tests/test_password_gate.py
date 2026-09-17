@@ -131,3 +131,74 @@ class EveryApiViewCarriesTheGate(APITestCase):
                 f"allow_password_change_pending: {offenders}"
             ),
         )
+
+
+class TheGateDoesNotAskForThePasswordAgain(APITestCase):
+    """`current_password` is optional on the first-time gate, and only there.
+
+    The screen used to ask for it, which meant typing the same string twice
+    in a row: once on the sign-in form to get a session at all, then again
+    here seconds later. See PasswordChangeSerializer for why the field
+    defends nothing in this one state.
+    """
+
+    def setUp(self):
+        self.sites = build_sites()
+        self.user = make_user("sharon", User.Role.PROGRAM_LEAD)
+        self.url = reverse("accounts:password-change")
+
+    def gate(self):
+        self.user.must_change_password = True
+        self.user.save(update_fields=["must_change_password"])
+
+    def change(self, **body):
+        self.client.force_authenticate(self.user)
+        return self.client.post(self.url, body, format="json")
+
+    def test_a_gated_account_may_omit_it(self):
+        self.gate()
+
+        response = self.change(new_password="a-password-only-she-knows")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.must_change_password)
+        self.assertTrue(self.user.check_password("a-password-only-she-knows"))
+
+    def test_a_gated_account_may_still_send_it(self):
+        """A client that has the password loses nothing by passing it."""
+        self.gate()
+
+        response = self.change(
+            current_password=PASSWORD, new_password="a-password-only-she-knows"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_a_wrong_one_is_still_refused_on_the_gate(self):
+        """Optional does not mean ignored."""
+        self.gate()
+
+        response = self.change(
+            current_password="not-her-password", new_password="a-password-only-she-knows"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("current_password", response.data)
+
+    def test_an_ordinary_account_must_still_send_it(self):
+        """Off the gate the field is doing real work — a stolen access token
+        must not be enough to lock the owner out of their own account."""
+        response = self.change(new_password="a-password-only-she-knows")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("current_password", response.data)
+
+    def test_the_new_password_must_still_differ(self):
+        """Checked against the stored hash, so it holds with no current sent."""
+        self.gate()
+
+        response = self.change(new_password=PASSWORD)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("new_password", response.data)

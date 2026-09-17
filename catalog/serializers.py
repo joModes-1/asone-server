@@ -252,6 +252,13 @@ class PriceListRowSerializer(serializers.Serializer):
 class SkuSerializer(serializers.ModelSerializer):
     garment_name = serializers.CharField(source="garment.__str__", read_only=True)
     size_name = serializers.CharField(source="size.name", read_only=True)
+    # Which price list this SKU appears on — PS, HS, or BOTH. A picker that
+    # offers a SKU the server will refuse is the screen's mistake rather than
+    # the user's: a kit is for one level, and KitItem.clean() rejects a
+    # Primary kit holding a High-School-only garment.
+    garment_school_level = serializers.CharField(
+        source="garment.school_level", read_only=True
+    )
     unit_price = serializers.SerializerMethodField()
 
     class Meta:
@@ -261,6 +268,7 @@ class SkuSerializer(serializers.ModelSerializer):
             "number",
             "garment",
             "garment_name",
+            "garment_school_level",
             "size",
             "size_name",
             "description",
@@ -373,6 +381,7 @@ class KitSerializer(serializers.ModelSerializer):
             "id",
             "kit_number",
             "name",
+            "description",
             "school_level",
             "school_level_display",
             "is_active",

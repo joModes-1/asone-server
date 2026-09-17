@@ -47,15 +47,10 @@ class AttentionAlertSerializer(serializers.Serializer):
     level = serializers.CharField(help_text="CRITICAL, HOLD, INSPECTION or READY.")
     count = serializers.IntegerField()
     message = serializers.CharField()
-    ref_id = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-        help_text="The one record this alert is about, for kinds that are "
-        "one row per record rather than a rollup — currently only "
-        "registrations_pending, where it is the RegistrationRequest id. "
-        "Absent for every other kind: those are a count over many records, "
-        "with no single one to link to.",
-    )
+    # The one record this row is about, where there is exactly one — so a
+    # click can open that person or that order rather than a list to search.
+    # Absent for a row that stands for several things, which is most of them.
+    ref_id = serializers.IntegerField(required=False, allow_null=True)
 
 
 class ActivityEventSerializer(serializers.Serializer):
@@ -94,6 +89,9 @@ class NotificationSerializer(serializers.Serializer):
     level = serializers.CharField()
     message = serializers.CharField()
     count = serializers.IntegerField()
+    # Same reasoning as AttentionAlertSerializer, and the reason this
+    # docstring's "same shape" claim is now true: the bell links through to
+    # the one record a row is about where there is exactly one.
     ref_id = serializers.IntegerField(required=False, allow_null=True)
 
 

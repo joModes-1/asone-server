@@ -44,6 +44,16 @@ class Kit(models.Model):
         help_text='Entered by whoever creates the kit, e.g. "PS-STARTER-01".',
     )
     name = models.CharField(max_length=120, help_text='For example "PS Starter Kit".')
+
+    # What this kit is for, in a sentence — "Standard kit issued to central
+    # regional schools". A school clerk choosing between two kits has only
+    # the name and the component list to go on otherwise, and the names are
+    # deliberately short.
+    description = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text="Who this kit is for, in a sentence. Shown to schools choosing one.",
+    )
     school_level = models.CharField(max_length=2, choices=SchoolLevel.choices)
 
     # AsOne's "Active Y/N", same as Garment and Sku. Kits are deactivated,

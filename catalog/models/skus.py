@@ -14,17 +14,24 @@ class Sku(models.Model):
     """One garment in one size.
 
     `number` is AsOne's control number: system assigned, unique, and **never
-    reused**, even after a SKU is retired. It is drawn from a Postgres
-    sequence rather than from a count of existing rows — a count would hand
-    the same number to two people creating SKUs at the same moment, and would
-    recycle numbers after a deletion.
+    reused**, even after a SKU is retired.
+
+    It reads as `GTR-14` — the garment's code, then the size. It used to be a
+    bare sequence number, `100015`, which was unique and told a clerk holding
+    the garment nothing: they could not check a shelf label against a pick
+    list without looking the number up first.
+
+    Uniqueness comes from the pair, not from a counter. A SKU is one garment
+    in one size and `unique_sku_per_garment_size` below says so, which makes
+    the composed code unique by the same fact. Never reused, because a
+    garment code is frozen at creation and a retired SKU keeps its row.
     """
 
     number = models.CharField(
-        max_length=12,
+        max_length=24,
         unique=True,
         editable=False,
-        help_text="System assigned. Unique forever, never reused.",
+        help_text="System assigned from the garment and size, for example GTR-14.",
     )
     garment = models.ForeignKey(
         "catalog.Garment", on_delete=models.PROTECT, related_name="skus"
@@ -91,9 +98,9 @@ class Sku(models.Model):
         # happens. Only ever set when missing: an existing number must never
         # change, because it is printed on pick lists and packing lists.
         if not self.number:
-            from catalog.services import next_sku_number
+            from catalog.services import sku_code
 
-            self.number = next_sku_number()
+            self.number = sku_code(self.garment, self.size)
 
         if not self.description:
             self.description = self.build_description()

@@ -7,13 +7,34 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from catalog.models import Garment, MinimumStockLevel, Size, Sku, Warehouse
-from catalog.services import PriceNotSet, next_sku_number, price_for_sku
+from catalog.services import PriceNotSet, price_for_sku
 
 from .factories import SEASON_START, make_garment, make_price
 
 
 class SkuNumberTests(TestCase):
-    """AsOne's control number: system assigned, unique, never reused."""
+    """AsOne's control number: system assigned, unique, and stable.
+
+    It used to be a bare sequence value — `100015` — and now reads `WSH-10`:
+    the garment's code, then the size. The guarantee changed shape with it,
+    and the change is worth stating because one of these tests used to assert
+    the opposite.
+
+    **Before.** Uniqueness came from a Postgres sequence, which never goes
+    backwards. Deleting a SKU and creating the same product again gave a
+    *different* number, and that was the point: the number was an arbitrary
+    token, so reusing it would have let one token mean two things.
+
+    **Now.** The code *is* the product — this garment, this size — so
+    recreating White Shirt size 10 gives WSH-10 again, and that is correct
+    rather than a regression. The property AsOne actually needs is that a
+    code printed on a 2027 packing list still means the same product in
+    2035, and a derived code gives that by construction instead of by
+    bookkeeping.
+
+    What has to hold for that to be true is tested here: a garment's code is
+    frozen once assigned, and a SKU's number never changes on save.
+    """
 
     def setUp(self):
         self.shirt = make_garment()
@@ -23,8 +44,7 @@ class SkuNumberTests(TestCase):
     def test_a_number_is_assigned_automatically(self):
         sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
 
-        self.assertTrue(sku.number)
-        self.assertEqual(len(sku.number), 6, "AsOne's example is a six digit number")
+        self.assertEqual(sku.number, f"{self.shirt.code}-10")
 
     def test_numbers_do_not_repeat(self):
         first = Sku.objects.create(garment=self.shirt, size=self.size_10)
@@ -32,14 +52,20 @@ class SkuNumberTests(TestCase):
 
         self.assertNotEqual(first.number, second.number)
 
-    def test_a_number_is_never_reused_after_a_deletion(self):
-        """A sequence never goes backwards. A number means one product forever."""
+    def test_the_same_product_gets_the_same_code_again(self):
+        """The code is the product, so recreating it gives the same code.
+
+        The inverse of what a sequence did, and deliberately — see the class
+        docstring. Nothing else in the system can reach this state anyway:
+        SKUs are deactivated rather than deleted, because the ledger points
+        at them and PROTECT would refuse.
+        """
         sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
         retired = sku.number
         sku.delete()
 
         replacement = Sku.objects.create(garment=self.shirt, size=self.size_10)
-        self.assertNotEqual(replacement.number, retired)
+        self.assertEqual(replacement.number, retired)
 
     def test_an_existing_number_never_changes_on_save(self):
         """It is printed on pick lists — it must mean the same thing forever."""
@@ -52,11 +78,37 @@ class SkuNumberTests(TestCase):
         sku.refresh_from_db()
         self.assertEqual(sku.number, original)
 
-    def test_numbers_are_drawn_in_sequence(self):
-        numbers = [int(next_sku_number()) for _ in range(3)]
+    def test_a_garment_code_survives_a_rename(self):
+        """Shelf labels are already printed. A tidied name must not move them."""
+        original = self.shirt.code
 
-        self.assertEqual(numbers, sorted(numbers))
-        self.assertEqual(len(set(numbers)), 3)
+        self.shirt.name = "White Shirt (long sleeve)"
+        self.shirt.save()
+
+        self.shirt.refresh_from_db()
+        self.assertEqual(self.shirt.code, original)
+
+    def test_a_clashing_stem_takes_a_suffix(self):
+        """One name on both price lists is two garments wanting one code.
+
+        "White Shirt" for Primary and "White Shirt" for High School are
+        separate rows — they can carry different prices — and both derive
+        WSH. The first keeps it; the second takes a digit.
+        """
+        primary = make_garment("Blue Tunic", Garment.SchoolLevel.PRIMARY)
+        high = make_garment("Blue Tunic", Garment.SchoolLevel.HIGH)
+
+        self.assertEqual(primary.code, "BTU")
+        self.assertEqual(high.code, "BTU2")
+
+    def test_a_size_with_punctuation_does_not_split_the_code(self):
+        """"E2E-12" must not put a second hyphen in E2E Tunic's code."""
+        tunic = make_garment("E2E Tunic", Garment.SchoolLevel.PRIMARY)
+        odd_size = Size.objects.create(name="E2E-12", sort_order=12)
+
+        sku = Sku.objects.create(garment=tunic, size=odd_size)
+
+        self.assertEqual(sku.number, "ETU-E2E12")
 
 
 class SkuIdentityTests(TestCase):

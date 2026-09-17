@@ -33,6 +33,7 @@ from catalog.services import PriceNotSet
 
 from . import reports, services
 from .models import Backorder, SchoolOrder, SchoolOrderLine, Shipment
+from .models.school_orders import OrderStatus
 from .permissions import (
     CanConfirmPayment,
     CanConfirmReceipt,
@@ -1401,6 +1402,16 @@ class PickingQueueView(APIView):
                 OpenApiTypes.INT,
                 description="Required for an all-locations role; ignored for a clerk.",
             ),
+            OpenApiParameter(
+                "status",
+                OpenApiTypes.STR,
+                enum=[OrderStatus.RELEASED, OrderStatus.PICKED],
+                description=(
+                    "Narrow the rows to one bucket: RELEASED is still to "
+                    "pick, PICKED is off the shelf and waiting for a van. "
+                    "Omit for both. `summary` is unaffected."
+                ),
+            ),
             OpenApiParameter("page", OpenApiTypes.INT),
             OpenApiParameter(
                 "page_size", OpenApiTypes.INT, description="Capped at 200."
@@ -1410,7 +1421,9 @@ class PickingQueueView(APIView):
             "The backlog, most urgent first, paginated.\n\n"
             "`summary` counts the **whole** queue, not the page: a warehouse "
             "asking how much is waiting means all of it, and a tile that "
-            "changed as you paged would be worse than no tile."
+            "changed as you paged would be worse than no tile. It is also "
+            "unaffected by `status`, for the same reason — the tiles are the "
+            "totals the filter is chosen from."
         ),
     )
     def get(self, request):
@@ -1422,6 +1435,26 @@ class PickingQueueView(APIView):
             )
 
         rows = reports.picking_queue(warehouse)
+
+        # Only the two statuses the backlog can hold. Anything else is a
+        # typo'd URL, and answering it with an empty page would look like a
+        # warehouse with nothing to do.
+        #
+        # Named `bucket` rather than `status`: this module imports DRF's
+        # `status` for its HTTP codes, and shadowing it here would be a trap
+        # for whoever adds the next line to this method.
+        bucket = request.query_params.get("status")
+        if bucket:
+            if bucket not in (OrderStatus.RELEASED, OrderStatus.PICKED):
+                raise DRFValidationError(
+                    {
+                        "status": (
+                            f"'{bucket}' is not a backlog status. Use "
+                            f"{OrderStatus.RELEASED} or {OrderStatus.PICKED}."
+                        )
+                    }
+                )
+            rows = rows.filter(status=bucket)
 
         paginator = SizedPageNumberPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
