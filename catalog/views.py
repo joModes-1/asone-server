@@ -160,6 +160,10 @@ class TailoringCenterViewSet(viewsets.ModelViewSet):
     queryset = TailoringCenter.objects.all().order_by("name")
     serializer_class = TailoringCenterSerializer
     permission_classes = MASTER_DATA
+    # Finance reads these for the same reason warehouse staff do: it is the
+    # role that posts count corrections and write-offs, and "is this SKU
+    # below its floor" is the context for deciding. Setting the floor is
+    # still the leads' alone.
     read_roles = (Role.WAREHOUSE_STAFF,)
     filterset_fields = ("is_active",)
     search_fields = ("name",)
@@ -246,7 +250,13 @@ class SizeViewSet(viewsets.ModelViewSet):
     queryset = Size.objects.all()
     serializer_class = SizeSerializer
     permission_classes = MASTER_DATA
-    read_roles = ()
+    # Writing stays with the leads, per F05. Reading is open to Finance as
+    # well, because the inventory screen filters by size and Finance is the
+    # role that posts stock corrections against those rows — a filter that
+    # 403s for the one person allowed to act on the table is the same bug
+    # the warehouse picker had. A size is the string "10"; there is nothing
+    # in it to protect.
+    read_roles = (Role.FINANCE,)
 
 
 @extend_schema(tags=["Master data — products"])
@@ -460,7 +470,11 @@ class MinimumStockLevelViewSet(viewsets.ModelViewSet):
     ).order_by("warehouse__name", "sku__description")
     serializer_class = MinimumStockLevelSerializer
     permission_classes = MASTER_DATA
-    read_roles = (Role.WAREHOUSE_STAFF,)
+    # Finance reads these for the same reason warehouse staff do: it is the
+    # role that posts count corrections and write-offs, and "is this SKU
+    # below its floor" is the context for deciding. Setting the floor is
+    # still the leads' alone.
+    read_roles = (Role.WAREHOUSE_STAFF, Role.FINANCE)
     filterset_fields = ("warehouse", "sku")
 
 

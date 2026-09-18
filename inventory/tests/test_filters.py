@@ -171,3 +171,65 @@ class TransferFilters(APITestCase):
         self.assertEqual(
             self.numbers(date_from="2026-05-01"), {self.draft.number}
         )
+
+
+class LedgerFilters(APITestCase):
+    """F48 — the audit trail by SKU, and the date range it needed.
+
+    The ledger already filtered on sku, warehouse, movement type and document
+    number. It could not answer "what happened to this SKU last quarter",
+    which is the question an audit trail is opened to ask.
+    """
+
+    def setUp(self):
+        self.sites = build_sites()
+        self.namayemba = self.sites["namayemba"]
+        self.finance = make_user("musana", Role.FINANCE)
+
+        garment = Garment.objects.create(name="Blue Trousers")
+        self.sku = Sku.objects.create(
+            garment=garment, size=Size.objects.create(name="12", sort_order=12)
+        )
+
+        # January and June, so a bound between them separates the two.
+        for day, quantity, doc in (
+            (date(2026, 1, 15), 200, "RC-JAN"),
+            (date(2026, 6, 15), 300, "RC-JUN"),
+        ):
+            post_movement(
+                warehouse=self.namayemba,
+                sku=self.sku,
+                quantity=quantity,
+                movement_type=MovementType.RECEIPT,
+                unit_value=Decimal("18000.00"),
+                document_number=doc,
+                occurred_on=day,
+                created_by=self.finance,
+            )
+
+        self.client.force_authenticate(self.finance)
+        self.url = reverse("inventory:movement-list")
+
+    def documents(self, **params):
+        response = self.client.get(self.url, params)
+        self.assertEqual(response.status_code, 200)
+        return {row["document_number"] for row in response.data["results"]}
+
+    def test_no_bound_is_the_whole_history(self):
+        self.assertEqual(self.documents(), {"RC-JAN", "RC-JUN"})
+
+    def test_date_from_applies_to_the_date_it_happened(self):
+        self.assertEqual(self.documents(date_from="2026-04-01"), {"RC-JUN"})
+
+    def test_date_to_stands_alone(self):
+        self.assertEqual(self.documents(date_to="2026-04-01"), {"RC-JAN"})
+
+    def test_both_bounds_are_inclusive(self):
+        self.assertEqual(
+            self.documents(date_from="2026-01-15", date_to="2026-01-15"),
+            {"RC-JAN"},
+        )
+
+    def test_the_existing_filters_still_work(self):
+        self.assertEqual(self.documents(sku=self.sku.pk), {"RC-JAN", "RC-JUN"})
+        self.assertEqual(self.documents(document_number="RC-JAN"), {"RC-JAN"})

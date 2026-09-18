@@ -251,7 +251,21 @@ class MasterDataAccess(BasePermission):
             audience = ALL_SITE_ROLES | frozenset(getattr(view, "read_roles", ()))
             return has_role(request.user, *audience)
 
-        # Writes are the Table Updates column, whatever the table.
+        # Deleting master data is narrower than editing it.
+        #
+        # A site, garment or SKU is pointed at by orders, stock movements and
+        # production orders, so the answer is nearly always to deactivate:
+        # PROTECT refuses the delete anyway once anything references the row,
+        # and config.exceptions turns that into a 409 saying so.
+        #
+        # What is left is the genuine mistake — a warehouse created five
+        # minutes ago with nothing attached — and that is a Program Lead's
+        # call rather than something any lead does in passing. Agreed with
+        # ERA 92 on 17 September 2026.
+        if request.method == "DELETE":
+            return has_role(request.user, Role.PROGRAM_LEAD)
+
+        # Every other write is the Table Updates column, whatever the table.
         return has_role(request.user, *CanUpdateTables.roles)
 
 

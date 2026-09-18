@@ -45,7 +45,7 @@ from inventory.services import (
     post_adjustment,
     post_transfer,
 )
-from orders.services import cancel_order, pick_order, place_order
+from orders.services import cancel_order, pick_order, place_order, release_order
 from procurement.models import GroupOrder
 from procurement.services import (
     create_group_order,
@@ -415,6 +415,7 @@ class Command(BaseCommand):
             school=sites["namayemba_ps"],
             placed_by=people["namayemba_school"],
             picked_by=people["namayemba_staff"],
+            finance=people["finance"],
             catalog=catalog,
         )
         orders += self._run_order_batch(
@@ -422,11 +423,12 @@ class Command(BaseCommand):
             school=sites["serere_hs"],
             placed_by=people["serere_school"],
             picked_by=people["serere_staff"],
+            finance=people["finance"],
             catalog=catalog,
         )
         return orders
 
-    def _run_order_batch(self, specs, *, school, placed_by, picked_by, catalog):
+    def _run_order_batch(self, specs, *, school, placed_by, picked_by, finance, catalog):
         orders = []
         for student_name, order_date, kit_lines, sku_lines, final_status in specs:
             order = place_order(
@@ -440,6 +442,16 @@ class Command(BaseCommand):
             if final_status == "cancel":
                 order = cancel_order(order, cancelled_by=placed_by, reason="Family could not pay before term start.")
             elif final_status == "pick":
+                # Paid for first. The warehouse cannot pick an unpaid order
+                # (`REQUIRE_RELEASE_BEFORE_PICK`), and this seed exists to
+                # produce data that obeys the same rules the API does — an
+                # order that reached PICKED without a release would be a
+                # state the running system can never produce.
+                order = release_order(
+                    order,
+                    released_by=finance,
+                    payment_reference=f"INV-SEED-{order.number}",
+                )
                 order = pick_order(order, picked_by=picked_by)
             orders.append(order)
         return orders

@@ -28,7 +28,7 @@ from inventory.services import (
     post_movement,
     stock_levels,
 )
-from orders.services import pick_order, place_order, ship_order
+from orders.services import pick_order, place_order, release_order, ship_order
 
 IN_FORCE = date(2026, 1, 1)
 TODAY = date(2026, 11, 10)
@@ -80,6 +80,14 @@ class DashboardSetup(APITestCase):
         )
 
     def order(self, quantity=2, sku=None, student="Miriam Achieng"):
+        """A placed order, left on HOLD.
+
+        Deliberately *not* released: this dashboard reports on orders at
+        every stage, and several tests here need one still awaiting payment
+        — the on-hold alert, cancellation (only an unpaid order may be
+        withdrawn), and the bell's counts. A test that goes on to pick calls
+        `released()` instead.
+        """
         return place_order(
             school=self.school,
             student_name=student,
@@ -87,6 +95,10 @@ class DashboardSetup(APITestCase):
             skus=[{"sku": sku or self.shirt, "quantity": quantity}],
             created_by=self.clerk,
         )
+
+    def released(self, **kwargs):
+        """The same order, paid for — what the warehouse may actually pick."""
+        return release_order(self.order(**kwargs), released_by=self.finance)
 
 
 class TheTilesAgreeWithTheScreensTheyLinkTo(DashboardSetup):
@@ -128,7 +140,7 @@ class TheTilesAgreeWithTheScreensTheyLinkTo(DashboardSetup):
 
     def test_pending_shipments_counts_picked_but_not_shipped(self):
         self.stock(self.shirt, 100)
-        picked = pick_order(self.order(quantity=2), picked_by=self.julius)
+        picked = pick_order(self.released(quantity=2), picked_by=self.julius)
         self.order(quantity=1, student="Ruth Naigaga")  # still on hold
 
         self.assertEqual(services.orders_awaiting_dispatch(self.namayemba), 1)
@@ -237,6 +249,7 @@ class RecentActivity(DashboardSetup):
             skus=[{"sku": self.shirt, "quantity": 2}],
             created_by=self.clerk,
         )
+        order = release_order(order, released_by=self.finance)
         ship_order(
             pick_order(order, picked_by=self.julius),
             shipped_by=self.julius,

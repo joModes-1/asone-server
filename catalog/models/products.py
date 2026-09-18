@@ -10,6 +10,7 @@ are not:
 Only the first two live here. The SKU is F06 and lands separately.
 """
 
+from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models.functions import Lower
 
@@ -61,6 +62,28 @@ class Garment(models.Model):
         help_text="Which price list this garment appears on.",
     )
     colour = models.CharField(max_length=40, blank=True)
+
+    # The swatch shown beside the colour name.
+    #
+    # Stored rather than derived, because deriving it means the app can only
+    # draw colours it has been taught: a garment in a shade nobody
+    # anticipated — purple, mustard — had no dot, or worse, a dot that
+    # claimed to be a colour it was not. AsOne picks the shade once here and
+    # every screen draws the same one.
+    #
+    # Blank means "no swatch chosen", which screens draw as an explicit
+    # neutral rather than as white — white is a real uniform colour.
+    colour_hex = models.CharField(
+        max_length=7,
+        blank=True,
+        help_text='The swatch for this colour, as "#RRGGBB". Optional.',
+        validators=[
+            RegexValidator(
+                r"^#[0-9a-fA-F]{6}$",
+                message='A colour must look like "#1e3a8a".',
+            )
+        ],
+    )
 
     # AsOne's "Active Y/N". Garments are deactivated, never deleted — the
     # stock ledger and past invoices point at them, and PROTECT would refuse

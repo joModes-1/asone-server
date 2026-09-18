@@ -99,6 +99,22 @@ class School(models.Model):
     level = models.CharField(max_length=2, choices=Level.choices)
     address = models.TextField(blank=True)
 
+    # How many children the school has, which is what sizes an order against
+    # expected demand.
+    #
+    # "Students", not "pupils": this field covers primary and high schools
+    # alike, and pupils is primary-school wording. One word has to serve both
+    # levels, and that word is students.
+    #
+    # Null rather than 0 for "nobody has told us": a school with no students
+    # and a school nobody has counted are different things, and averaging the
+    # second as zero would understate demand.
+    student_count = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Students enrolled. Left blank until the school reports it.",
+    )
+
     # Sites are deactivated, never deleted — the same rule accounts follow.
     # Every transaction that happened here points at this row, so PROTECT
     # refuses the delete; a closed site has to be able to say it is closed
