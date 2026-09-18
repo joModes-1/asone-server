@@ -31,6 +31,7 @@ from orders.services import (
     check_availability,
     pick_order,
     place_order,
+    release_order,
 )
 
 Role = User.Role
@@ -63,6 +64,13 @@ class FulfilmentSetup(TestCase):
             skus=[{"sku": self.sku, "quantity": 2}],
             created_by=self.clerk,
         )
+
+        # Paid for. Picking requires it — `REQUIRE_RELEASE_BEFORE_PICK` — and
+        # these tests are about fulfilment rather than the payment gate,
+        # which has its own file. An order reaching a real picking screen has
+        # already been released, so that is the order these start from.
+        release_order(self.order, released_by=self.finance)
+        self.order.refresh_from_db()
 
     def stock_in(self, quantity, warehouse=None, value="20000.00", on=date(2026, 10, 1)):
         return post_movement(
@@ -152,7 +160,10 @@ class PickingReservesStock(FulfilmentSetup):
 
         self.assertEqual(stock_level(self.sku, self.warehouse), 1)
         self.order.refresh_from_db()
-        self.assertEqual(self.order.status, OrderStatus.HOLD)
+        # Still RELEASED, not PICKED: the refusal left the order exactly as
+        # it found it. (It reads RELEASED rather than HOLD because these
+        # orders are paid for in setUp — picking requires that now.)
+        self.assertEqual(self.order.status, OrderStatus.RELEASED)
 
     def test_picking_twice_is_refused(self):
         self.stock_in(5)
@@ -204,6 +215,13 @@ class FulfilmentApi(APITestCase):
             skus=[{"sku": self.sku, "quantity": 2}],
             created_by=self.clerk,
         )
+
+        # Paid for. Picking requires it — `REQUIRE_RELEASE_BEFORE_PICK` — and
+        # these tests are about fulfilment rather than the payment gate,
+        # which has its own file. An order reaching a real picking screen has
+        # already been released, so that is the order these start from.
+        release_order(self.order, released_by=self.finance)
+        self.order.refresh_from_db()
         post_movement(
             warehouse=self.warehouse,
             sku=self.sku,

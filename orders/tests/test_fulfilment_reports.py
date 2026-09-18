@@ -32,6 +32,7 @@ from orders.services import (
     pick_available,
     pick_order,
     place_order,
+    release_order,
     ship_order,
 )
 
@@ -75,11 +76,19 @@ class ReportSetup(APITestCase):
         )
 
     def order(self, student="Miriam Achieng", **lines):
-        return place_order(
+        """A placed order, paid for.
+
+        Released here rather than in each test: picking requires payment
+        (`REQUIRE_RELEASE_BEFORE_PICK`), and every report in this file is
+        drawn from orders that have been through the warehouse — so an order
+        that never reached RELEASED could not appear in one anyway.
+        """
+        order = place_order(
             school=self.school, student_name=student, order_date=ORDERED_ON,
             skus=[{"sku": getattr(self, n), "quantity": q} for n, q in lines.items()],
             created_by=self.clerk,
         )
+        return release_order(order, released_by=self.finance)
 
 
 class ThePackingList(ReportSetup):
@@ -312,6 +321,7 @@ class TheCostedReportDoesNotDoubleCount(ReportSetup):
             created_by=self.clerk,
         )
         self.assertEqual(order.lines.filter(sku=self.shirt).count(), 2)
+        order = release_order(order, released_by=self.finance)
 
         ship_order(pick_order(order, picked_by=self.julius),
                    shipped_by=self.julius, shipped_on=SHIPPED_ON)

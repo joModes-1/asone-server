@@ -14,7 +14,7 @@ from rest_framework.test import APITestCase
 
 from accounts.models import User
 from accounts.tests.factories import build_sites, make_user
-from catalog.models import Garment, MinimumStockLevel, Size, Sku
+from catalog.models import Garment, MinimumStockLevel, Size, Sku, TailoringCenter
 
 from .factories import make_garment, make_kit, make_kit_item, make_price
 
@@ -32,9 +32,17 @@ READ_AUDIENCE = {
     # than F06's SKUs, which every role may view. Odd on its face, since a SKU
     # carries its garment's name, but it is what AsOne's matrix says.
     "catalog:garment-list": set(),
-    "catalog:size-list": set(),
+    # Finance reads sizes, and only reads them. The inventory screen filters
+    # by size, and Finance is the role that posts count corrections against
+    # those rows — the same reasoning as warehouses below. A size is the
+    # string "10"; writing stays with the leads. Widened 17 September 2026.
+    "catalog:size-list": {Role.FINANCE},
     "catalog:garment-price-list": {Role.SCHOOL_STAFF, Role.FINANCE},
-    "catalog:minimum-stock-level-list": {Role.WAREHOUSE_STAFF},
+    # Finance for the same reason: it posts the corrections and write-offs
+    # these thresholds are the context for. Setting a minimum is still the
+    # leads'. Widened 17 September 2026 — both belong with Q3 when AsOne is
+    # asked about the warehouse/Finance split.
+    "catalog:minimum-stock-level-list": {Role.WAREHOUSE_STAFF, Role.FINANCE},
     "catalog:tailoring-center-list": {Role.WAREHOUSE_STAFF},
     # Finance is wider than the matrix's "Warehouses — view: Warehouse Staff"
     # line, and follows from two cells that are in it: Finance's scope is all
@@ -392,3 +400,124 @@ class KitApiTests(CatalogSetup):
         response = self.client.delete(reverse("catalog:kit-detail", args=[kit.pk]))
 
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+
+class FinanceReadsWhatItCorrectsAgainst(APITestCase):
+    """Finance may read sizes and minimum levels, and still not write them.
+
+    Finance is the only role that may post a count correction or a write-off,
+    and the inventory screen it works from filters by size and shows each
+    SKU's minimum. Both of those 403'd, which is the same shape of bug the
+    warehouse picker had: the one person allowed to act on the table could
+    not load the table.
+
+    Writing stays with the leads — F05 is unchanged.
+    """
+
+    def setUp(self):
+        self.sites = build_sites()
+        self.finance = make_user("musana", User.Role.FINANCE)
+        self.client.force_authenticate(self.finance)
+
+    def test_finance_may_read_sizes(self):
+        Size.objects.create(name="10", sort_order=10)
+
+        self.assertEqual(
+            self.client.get(reverse("catalog:size-list")).status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_finance_may_read_minimum_levels(self):
+        self.assertEqual(
+            self.client.get(reverse("catalog:minimum-stock-level-list")).status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_finance_may_not_create_a_size(self):
+        """Reading is not writing: master data stays the leads' column."""
+        response = self.client.post(
+            reverse("catalog:size-list"), {"name": "18", "sort_order": 18}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_finance_still_may_not_read_garments(self):
+        """F05 gives garments to the leads alone, and that is left alone.
+
+        Widened deliberately narrowly: a size is the string "10" and a
+        minimum is a threshold Finance acts on. A garment carries the price,
+        which is a different question — open question 6.
+        """
+        self.assertEqual(
+            self.client.get(reverse("catalog:garment-list")).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+
+class DeletingMasterDataIsTheProgramLeadsAlone(APITestCase):
+    """Hard delete is narrower than edit — agreed 17 September 2026.
+
+    Nearly every site, garment and SKU is pointed at by an order, a stock
+    movement or a production order, so the answer is normally to deactivate:
+    PROTECT refuses the delete and `config.exceptions` turns that into a 409
+    that says which rows are in the way.
+
+    What remains is the genuine mistake — something created minutes ago with
+    nothing attached — and that is the Program Lead's call rather than
+    something either lead does in passing.
+    """
+
+    def setUp(self):
+        self.sites = build_sites()
+        # A centre of this test's own, so deleting it says something about
+        # permissions rather than about what the fixture happens to attach.
+        self.centre = TailoringCenter.objects.create(name="Spare")
+
+    def test_the_operations_manager_may_edit_but_not_delete(self):
+        manager = make_user("andrew", User.Role.OPERATIONS_MANAGER)
+        self.client.force_authenticate(manager)
+        url = reverse("catalog:tailoring-center-detail", args=[self.centre.id])
+
+        self.assertEqual(
+            self.client.patch(url, {"address": "Moved"}, format="json").status_code,
+            status.HTTP_200_OK,
+            "editing is still the Table Updates column",
+        )
+        self.assertEqual(self.client.delete(url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_the_program_lead_may_delete_something_nothing_points_at(self):
+        lead = make_user("sharon", User.Role.PROGRAM_LEAD)
+        self.client.force_authenticate(lead)
+
+        created = self.client.post(
+            reverse("catalog:tailoring-center-list"), {"name": "Typo"}, format="json"
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+
+        self.assertEqual(
+            self.client.delete(
+                reverse("catalog:tailoring-center-detail", args=[created.data["id"]])
+            ).status_code,
+            status.HTTP_204_NO_CONTENT,
+        )
+
+    def test_deleting_something_in_use_is_refused_with_a_reason(self):
+        """A 409 naming the obstacle, not a 500."""
+        lead = make_user("sharon", User.Role.PROGRAM_LEAD)
+        self.client.force_authenticate(lead)
+
+        response = self.client.delete(
+            reverse("catalog:warehouse-detail", args=[self.sites["namayemba"].id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_finance_may_not_delete(self):
+        self.client.force_authenticate(make_user("musana", User.Role.FINANCE))
+
+        self.assertEqual(
+            self.client.delete(
+                reverse("catalog:tailoring-center-detail", args=[self.centre.id])
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )

@@ -36,6 +36,7 @@ from orders.services import (
     pick_available,
     pick_order,
     place_order,
+    release_order,
     warehouses_that_could_fill,
 )
 
@@ -55,6 +56,7 @@ class BackorderSetup(APITestCase):
         self.julius = make_user("julius", Role.WAREHOUSE_STAFF, warehouse=self.namayemba)
         self.joan = make_user("joan", Role.WAREHOUSE_STAFF, warehouse=self.serere)
         self.lead = make_user("sharon", Role.PROGRAM_LEAD)
+        self.finance = make_user("musana", Role.FINANCE)
 
         self.shirt = self.priced_sku("White Shirt", "25000.00")
         self.socks = self.priced_sku("Socks", "5000.00")
@@ -77,8 +79,14 @@ class BackorderSetup(APITestCase):
         )
 
     def order_for(self, **lines):
-        """`shirt=5, socks=2` -> an order for those quantities."""
-        return place_order(
+        """`shirt=5, socks=2` -> an order for those quantities, paid for.
+
+        Released here because everything in this file happens *after* the
+        warehouse starts work on an order, and neither door into the
+        warehouse — `pick_order` or `pick_available` — opens for an unpaid
+        one. The payment gate itself is tested in `test_release.py`.
+        """
+        order = place_order(
             school=self.school,
             student_name="Miriam Achieng",
             order_date=ORDERED_ON,
@@ -88,6 +96,7 @@ class BackorderSetup(APITestCase):
             ],
             created_by=self.clerk,
         )
+        return release_order(order, released_by=self.finance)
 
     def short_pick(self):
         """Namayemba has 3 shirts; the school ordered 5. Two are owed."""
