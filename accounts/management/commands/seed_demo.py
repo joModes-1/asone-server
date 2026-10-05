@@ -40,17 +40,46 @@ SCHOOLS = [
     ("Serere High School", School.Level.HIGH, "Serere"),
 ]
 
-SIZES = [("8", 8), ("10", 10), ("12", 12), ("14", 14), ("16", 16)]
+#: AsOne sizes garments XS through XXL, not by number — confirmed by the
+#: 2027 SKU workbook, where all 308 SKUs carry one of these seven. The demo
+#: used 8/10/12/14/16 before, which made every screenshot and every
+#: conversation about the demo disagree with the real catalogue.
+#:
+#: "OS" is for the things that come in one size only — socks and neckties.
+#: It sorts last because it is not a point on the scale.
+SIZES = [
+    ("XS", 10),
+    ("S", 20),
+    ("M", 30),
+    ("L", 40),
+    ("XL", 50),
+    ("XXL", 60),
+    ("OS", 99),
+]
+
+#: Garments that come in one size rather than the full run.
+ONE_SIZE_GARMENTS = {"Socks"}
 
 # name, school level, colour, unit price in UGX
+#: name, fit group, colour, colour code, item code, price
+#:
+#: Every garment carries a fit group and a colour code now, so the demo
+#: produces the five-part SKU numbers AsOne's catalogue uses rather than the
+#: two-part fallback. A demo whose numbers do not look like the real ones is
+#: a demo nobody can check anything against.
+#:
+#: The item codes are stated rather than derived for the same reason AsOne's
+#: are: "Jumper" derives to JUM and "Socks" to SOC, but Grey Trousers and
+#: Grey Shorts would both give GSH, and picking which one wins is a human
+#: call, not a rule.
 GARMENTS = [
-    ("White Shirt", Garment.SchoolLevel.BOTH, "White", "25000.00"),
-    ("Grey Trousers", Garment.SchoolLevel.HIGH, "Grey", "35000.00"),
-    ("Blue Tunic", Garment.SchoolLevel.PRIMARY, "Blue", "30000.00"),
-    ("Navy Skirt", Garment.SchoolLevel.HIGH, "Navy", "32000.00"),
-    ("Grey Shorts", Garment.SchoolLevel.PRIMARY, "Grey", "22000.00"),
-    ("Jumper", Garment.SchoolLevel.BOTH, "Maroon", "45000.00"),
-    ("Socks", Garment.SchoolLevel.BOTH, "White", "5000.00"),
+    ("White Shirt", Garment.FitGroup.ALL, "White", "WHT", "WSH", "25000.00"),
+    ("Grey Trousers", Garment.FitGroup.S1_S4, "Grey", "GRY", "GTR", "35000.00"),
+    ("Blue Tunic", Garment.FitGroup.P1_P4, "Blue", "BLU", "BTU", "30000.00"),
+    ("Navy Skirt", Garment.FitGroup.S5_S6, "Navy", "NVY", "NSK", "32000.00"),
+    ("Grey Shorts", Garment.FitGroup.P5_P7, "Grey", "GRY", "GYSH", "22000.00"),
+    ("Jumper", Garment.FitGroup.NURSERY, "Maroon", "MAR", "JUM", "45000.00"),
+    ("Socks", Garment.FitGroup.ALL, "White", "WHT", "SOC", "5000.00"),
 ]
 
 #: Prices run from the start of the 2026 school year so that "price today"
@@ -105,6 +134,16 @@ class Command(BaseCommand):
             help="Run even with DEBUG off. You almost certainly do not want this.",
         )
         parser.add_argument(
+            "--prune-legacy-sizes",
+            action="store_true",
+            help=(
+                "Retire demo sizes that are no longer in SIZES, and the SKUs "
+                "beneath them. Use after the size scheme changes. Anything a "
+                "stock movement, order or kit still points at is kept and "
+                "reported \u2014 history is never deleted to tidy a list."
+            ),
+        )
+        parser.add_argument(
             "--reset-passwords",
             action="store_true",
             help=(
@@ -121,6 +160,9 @@ class Command(BaseCommand):
                 "refusing to run with DEBUG off. Pass --force only if you are "
                 "certain this is not a real database."
             )
+
+        if options["prune_legacy_sizes"]:
+            self._prune_legacy_sizes()
 
         centers = self._seed(
             "Tailoring Centers",
@@ -181,17 +223,48 @@ class Command(BaseCommand):
         sizes = {}
         for name, order in SIZES:
             size, created = Size.objects.get_or_create(
-                name=name, defaults={"sort_order": order}
+                name=name,
+                defaults={"sort_order": order, "is_one_size": name == "OS"},
             )
+            # `defaults` only applies on creation, so a size that already
+            # existed from an earlier run keeps whatever flag it had. That
+            # left "OS" un-flagged after the size scheme changed, and the
+            # kit size rule silently stopped exempting socks. Re-asserted
+            # every run so re-seeding converges rather than drifting.
+            wants_one_size = name == "OS"
+            if not created and size.is_one_size != wants_one_size:
+                size.is_one_size = wants_one_size
+                size.save(update_fields=["is_one_size"])
             sizes[name] = size
             self.stdout.write(f"  {self.style.SUCCESS('created') if created else 'exists '}  size {name}")
 
         self.stdout.write(self.style.MIGRATE_HEADING("Garments and prices"))
         garments = []
-        for name, level, colour, price in GARMENTS:
-            garment, created = Garment.objects.get_or_create(
-                name=name, school_level=level, defaults={"colour": colour}
-            )
+        for name, fit, colour, colour_code, item_code, price in GARMENTS:
+            # Looked up on name alone.
+            #
+            # The key used to be (name, school_level) and became (name,
+            # fit_group) when the fit group arrived — which meant a demo
+            # database seeded before that change had every garment at
+            # fit_group="" and re-seeding quietly created a second copy of
+            # each one. The names are unique within this list, so the name
+            # is the honest key, and the fit group is something to bring up
+            # to date rather than to match on.
+            garment = Garment.objects.filter(name=name).first()
+            created = garment is None
+            if created:
+                garment = Garment(name=name)
+            # Re-asserted every run, not just on creation, so re-seeding
+            # converges rather than drifting — the same trap "OS" fell into.
+            # A garment seeded before these fields existed kept a blank
+            # colour code and went on producing two-part SKU numbers.
+            garment.fit_group = fit
+            garment.colour = colour
+            garment.colour_code = colour_code
+            if not garment.code:
+                garment.code = item_code
+            garment.full_clean()
+            garment.save()
             garments.append(garment)
 
             # get_or_create on the price too: the exclusion constraint would
@@ -207,8 +280,12 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_HEADING("SKUs"))
         made = 0
         for garment in garments:
-            # Socks come in fewer sizes, like the real catalogue.
-            applicable = ["10", "12"] if garment.name == "Socks" else [s[0] for s in SIZES]
+            # Socks come in one size, like the real catalogue.
+            applicable = (
+                ["OS"]
+                if garment.name in ONE_SIZE_GARMENTS
+                else [name for name, _ in SIZES if name != "OS"]
+            )
             for size_name in applicable:
                 sku, created = Sku.objects.get_or_create(
                     garment=garment, size=sizes[size_name]
@@ -322,3 +399,60 @@ class Command(BaseCommand):
         self.stdout.write("Try these against each other:")
         self.stdout.write("  julius@  (Namayemba) vs joan@ (Serere)    — must not see each other's site")
         self.stdout.write("  chrisis@ (school)    vs musana@ (Finance) — different matrix columns entirely")
+
+    def _prune_legacy_sizes(self):
+        """Retire demo sizes no longer in SIZES, and the SKUs beneath them.
+
+        The seed is otherwise additive — everything is `get_or_create`, which
+        is what makes it safe to re-run. That is the wrong behaviour when the
+        size scheme itself changes: adding XS–XXL beside 8/10/12/14/16 leaves
+        a demo carrying two conventions at once, which is exactly the
+        confusion the change was meant to end.
+
+        **History is never deleted to tidy a list.** A SKU that a stock
+        movement, order line, receipt or kit still points at is protected by
+        the same PROTECT this codebase uses everywhere, and is reported
+        rather than forced. If anything is held back, the honest fix is a
+        fresh database, not a harder delete.
+        """
+        from django.db.models import ProtectedError
+
+        keep = {name for name, _ in SIZES}
+        legacy = Size.objects.exclude(name__in=keep)
+
+        self.stdout.write(self.style.MIGRATE_HEADING("Retiring legacy sizes"))
+        if not legacy.exists():
+            self.stdout.write("  nothing to retire")
+            return
+
+        held = []
+        for size in legacy:
+            for sku in list(size.skus.all()):
+                try:
+                    with transaction.atomic():
+                        sku.delete()
+                except ProtectedError:
+                    held.append(sku.number)
+
+            if size.skus.exists():
+                continue
+            try:
+                with transaction.atomic():
+                    name = size.name
+                    size.delete()
+                    self.stdout.write(f"  {self.style.WARNING('retired')}  size {name}")
+            except ProtectedError:
+                held.append(f"size {size.name}")
+
+        if held:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"  kept {len(held)} still referenced by real records: "
+                    + ", ".join(held[:8])
+                    + ("..." if len(held) > 8 else "")
+                )
+            )
+            self.stdout.write(
+                "  a demo with transactions on the old sizes needs a fresh "
+                "database, not a harder delete."
+            )

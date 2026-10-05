@@ -49,7 +49,7 @@ class AdjustmentSetup(TestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
 
         self.damage = ReasonCode.objects.create(
@@ -118,7 +118,7 @@ class PreparingAnAdjustmentDoesNotTouchStock(AdjustmentSetup):
         the adjustment is even written down."""
         unpriced = Garment.objects.create(name="Unpriced Blazer")
         unpriced_sku = Sku.objects.create(
-            garment=unpriced, size=Size.objects.create(name="12", sort_order=12)
+            garment=unpriced, size=Size.objects.create(name="M", sort_order=30)
         )
 
         with self.assertRaises(PriceNotSet):
@@ -355,7 +355,7 @@ class InventoryAdjustmentApi(APITestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         self.damage = ReasonCode.objects.create(
             code="DMG", name="Damaged", direction=Direction.DECREASE
@@ -425,7 +425,7 @@ class InventoryAdjustmentApi(APITestCase):
     def test_creating_an_adjustment_for_an_unpriced_sku_is_a_400_not_a_500(self):
         unpriced = Garment.objects.create(name="Unpriced Blazer")
         unpriced_sku = Sku.objects.create(
-            garment=unpriced, size=Size.objects.create(name="12", sort_order=12)
+            garment=unpriced, size=Size.objects.create(name="M", sort_order=30)
         )
         self.as_role(Role.FINANCE)
 

@@ -29,7 +29,7 @@ class KitFixSetup(APITestCase):
     def setUp(self):
         build_sites()
         self.client.force_authenticate(make_user("sharon", User.Role.PROGRAM_LEAD))
-        self.size = Size.objects.create(name="10", sort_order=10)
+        self.size = Size.objects.create(name="S", sort_order=20)
 
     def sku_for(self, name, level=Garment.SchoolLevel.BOTH, amount="10000.00"):
         garment = Garment.objects.create(name=name, school_level=level)

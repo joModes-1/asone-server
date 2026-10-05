@@ -26,7 +26,7 @@ class SkuNumberTests(TestCase):
     token, so reusing it would have let one token mean two things.
 
     **Now.** The code *is* the product — this garment, this size — so
-    recreating White Shirt size 10 gives WSH-10 again, and that is correct
+    recreating White Shirt size S gives WSH-S again, and that is correct
     rather than a regression. The property AsOne actually needs is that a
     code printed on a 2027 packing list still means the same product in
     2035, and a derived code gives that by construction instead of by
@@ -38,17 +38,17 @@ class SkuNumberTests(TestCase):
 
     def setUp(self):
         self.shirt = make_garment()
-        self.size_10 = Size.objects.create(name="10", sort_order=10)
-        self.size_12 = Size.objects.create(name="12", sort_order=12)
+        self.size_s = Size.objects.create(name="S", sort_order=20)
+        self.size_m = Size.objects.create(name="M", sort_order=30)
 
     def test_a_number_is_assigned_automatically(self):
-        sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
+        sku = Sku.objects.create(garment=self.shirt, size=self.size_s)
 
-        self.assertEqual(sku.number, f"{self.shirt.code}-10")
+        self.assertEqual(sku.number, f"{self.shirt.code}-S")
 
     def test_numbers_do_not_repeat(self):
-        first = Sku.objects.create(garment=self.shirt, size=self.size_10)
-        second = Sku.objects.create(garment=self.shirt, size=self.size_12)
+        first = Sku.objects.create(garment=self.shirt, size=self.size_s)
+        second = Sku.objects.create(garment=self.shirt, size=self.size_m)
 
         self.assertNotEqual(first.number, second.number)
 
@@ -60,16 +60,16 @@ class SkuNumberTests(TestCase):
         SKUs are deactivated rather than deleted, because the ledger points
         at them and PROTECT would refuse.
         """
-        sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
+        sku = Sku.objects.create(garment=self.shirt, size=self.size_s)
         retired = sku.number
         sku.delete()
 
-        replacement = Sku.objects.create(garment=self.shirt, size=self.size_10)
+        replacement = Sku.objects.create(garment=self.shirt, size=self.size_s)
         self.assertEqual(replacement.number, retired)
 
     def test_an_existing_number_never_changes_on_save(self):
         """It is printed on pick lists — it must mean the same thing forever."""
-        sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
+        sku = Sku.objects.create(garment=self.shirt, size=self.size_s)
         original = sku.number
 
         sku.is_active = False
@@ -102,43 +102,47 @@ class SkuNumberTests(TestCase):
         self.assertEqual(high.code, "BTU2")
 
     def test_a_size_with_punctuation_does_not_split_the_code(self):
-        """"E2E-12" must not put a second hyphen in E2E Tunic's code."""
+        """"XL-TALL" must not put a second hyphen in E2E Tunic's code.
+
+        A SKU number reads as two parts separated by one hyphen. A size
+        whose own name contains one would make it look like three.
+        """
         tunic = make_garment("E2E Tunic", Garment.SchoolLevel.PRIMARY)
-        odd_size = Size.objects.create(name="E2E-12", sort_order=12)
+        odd_size = Size.objects.create(name="XL-TALL", sort_order=55)
 
         sku = Sku.objects.create(garment=tunic, size=odd_size)
 
-        self.assertEqual(sku.number, "ETU-E2E12")
+        self.assertEqual(sku.number, "ETU-XLTALL")
 
 
 class SkuIdentityTests(TestCase):
     def setUp(self):
         self.shirt = make_garment("White Shirt", Garment.SchoolLevel.PRIMARY, colour="White")
-        self.size_10 = Size.objects.create(name="10", sort_order=10)
+        self.size_s = Size.objects.create(name="S", sort_order=20)
 
     def test_a_garment_and_size_pair_is_unique(self):
         """Two rows for the same product would split its stock in two."""
-        Sku.objects.create(garment=self.shirt, size=self.size_10)
+        Sku.objects.create(garment=self.shirt, size=self.size_s)
 
         with self.assertRaises(IntegrityError), transaction.atomic():
-            Sku.objects.create(garment=self.shirt, size=self.size_10)
+            Sku.objects.create(garment=self.shirt, size=self.size_s)
 
     def test_the_description_is_built_from_the_garment_and_size(self):
-        sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
+        sku = Sku.objects.create(garment=self.shirt, size=self.size_s)
 
-        self.assertEqual(sku.description, "White Shirt White size 10 (PS)")
+        self.assertEqual(sku.description, "White Shirt White size S (PS)")
 
     def test_a_supplied_description_is_kept(self):
         sku = Sku.objects.create(
-            garment=self.shirt, size=self.size_10, description="Custom label"
+            garment=self.shirt, size=self.size_s, description="Custom label"
         )
         self.assertEqual(sku.description, "Custom label")
 
     def test_skus_sort_in_description_order(self):
         """Pick lists print "in Description sequence" (p.2)."""
-        size_8 = Size.objects.create(name="8", sort_order=8)
-        Sku.objects.create(garment=self.shirt, size=self.size_10)
-        Sku.objects.create(garment=self.shirt, size=size_8)
+        size_xs = Size.objects.create(name="XS", sort_order=10)
+        Sku.objects.create(garment=self.shirt, size=self.size_s)
+        Sku.objects.create(garment=self.shirt, size=size_xs)
 
         descriptions = list(Sku.objects.values_list("description", flat=True))
         self.assertEqual(descriptions, sorted(descriptions))
@@ -181,8 +185,8 @@ class MinimumStockLevelTests(TestCase):
 
     def setUp(self):
         self.shirt = make_garment()
-        self.size_10 = Size.objects.create(name="10", sort_order=10)
-        self.sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
+        self.size_s = Size.objects.create(name="S", sort_order=20)
+        self.sku = Sku.objects.create(garment=self.shirt, size=self.size_s)
         self.namayemba = Warehouse.objects.create(name="Namayemba")
         self.serere = Warehouse.objects.create(name="Serere")
 

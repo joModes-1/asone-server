@@ -33,7 +33,7 @@ class DeletionSetup(APITestCase):
         self.price = GarmentPrice.objects.create(
             garment=self.shirt, unit_price=Decimal("25000.00"), active_date=IN_FORCE
         )
-        self.size = Size.objects.create(name="10", sort_order=10)
+        self.size = Size.objects.create(name="S", sort_order=20)
         self.sku = Sku.objects.create(garment=self.shirt, size=self.size)
 
 
@@ -79,11 +79,11 @@ class ConfigurationRowsMayBeDeleted(DeletionSetup):
     """Deleting these is how a typo gets fixed.
 
     Blocking them would be strictness for its own sake: Size has no
-    `is_active`, so a mistyped "1O" would clutter every dropdown forever.
+    `is_active`, so a mistyped "XLL" would clutter every dropdown forever.
     """
 
     def test_an_unused_size_can_be_deleted(self):
-        typo = Size.objects.create(name="1O", sort_order=99)
+        typo = Size.objects.create(name="XLL", sort_order=99)
 
         response = self.client.delete(reverse("catalog:size-detail", args=[typo.pk]))
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)

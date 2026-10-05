@@ -45,7 +45,7 @@ class CountCorrectionSetup(TestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
 
         # Same codes migration 0006 creates — not stand-ins, so these tests
@@ -189,7 +189,7 @@ class CorrectingAnUnpricedSku(CountCorrectionSetup):
     def test_raises_rather_than_posting_at_zero(self):
         unpriced = Garment.objects.create(name="Unpriced Blazer")
         unpriced_sku = Sku.objects.create(
-            garment=unpriced, size=Size.objects.create(name="12", sort_order=12)
+            garment=unpriced, size=Size.objects.create(name="M", sort_order=30)
         )
 
         with self.assertRaises(PriceNotSet):
@@ -279,7 +279,7 @@ class CountCorrectionApi(APITestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         ReasonCode.objects.create(
             code="CORR_UP",
@@ -376,7 +376,7 @@ class CountAgainstPickedStock(TestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         ReasonCode.objects.create(
             code="CORR_UP", name="Count higher", direction=Direction.INCREASE

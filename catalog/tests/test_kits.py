@@ -22,7 +22,7 @@ from catalog.services import EmptyKit, PriceNotSet, compute_kit_price, reprice
 from .factories import SEASON_START, make_garment, make_kit, make_kit_item, make_price
 
 
-def make_sku(garment, size_name="10", sort_order=10):
+def make_sku(garment, size_name="S", sort_order=10):
     size = Size.objects.create(name=size_name, sort_order=sort_order)
     return Sku.objects.create(garment=garment, size=size)
 
@@ -83,7 +83,7 @@ class KitPricingTests(TestCase):
     def setUp(self):
         self.shirt = make_garment("White Shirt")
         self.trousers = make_garment("Grey Trousers")
-        self.shirt_sku = make_sku(self.shirt, "10", 10)
+        self.shirt_sku = make_sku(self.shirt, "S", 20)
         self.trousers_sku = make_sku(self.trousers, "12", 12)
         self.kit = make_kit()
 

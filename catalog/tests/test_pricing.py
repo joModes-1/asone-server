@@ -254,7 +254,7 @@ class KitPriceListTests(TestCase):
         make_price(self.shirt, "25000.00", SEASON_START)
         make_price(self.socks, "5000.00", SEASON_START)
 
-        size = Size.objects.create(name="10", sort_order=10)
+        size = Size.objects.create(name="S", sort_order=20)
         self.shirt_sku = Sku.objects.create(garment=self.shirt, size=size)
         self.socks_sku = Sku.objects.create(garment=self.socks, size=size)
 
@@ -306,7 +306,7 @@ class KitPriceListTests(TestCase):
         KitItem.objects.create(
             kit=self.kit,
             sku=Sku.objects.create(
-                garment=pe, size=Size.objects.create(name="12", sort_order=12)
+                garment=pe, size=Size.objects.create(name="M", sort_order=30)
             ),
             quantity=1,
         )
@@ -339,7 +339,7 @@ class KitPriceGapTests(TestCase):
         self.pe = make_garment("PE Shorts", Garment.SchoolLevel.PRIMARY)
         make_price(self.shirt, "25000.00", SEASON_START)  # PE Shorts: unpriced
 
-        size = Size.objects.create(name="10", sort_order=10)
+        size = Size.objects.create(name="S", sort_order=20)
         self.kit = Kit.objects.create(
             kit_number="PS-STARTER", name="PS Starter Kit",
             school_level=Kit.SchoolLevel.PRIMARY,

@@ -174,7 +174,7 @@ class TheAlertTogglesActuallyGateAlerts(APITestCase):
 
         garment = Garment.objects.create(name="White Shirt")
         sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         MinimumStockLevel.objects.create(
             sku=sku, warehouse=self.sites["namayemba"], minimum_quantity=50

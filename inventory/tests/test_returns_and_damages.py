@@ -49,7 +49,7 @@ class ReturnsAndDamagesSetup(TestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
 
         # Same codes and wording seed_demo ships, not stand-ins — these
@@ -141,7 +141,7 @@ class ReturnsAndDamagesApi(APITestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         self.returned = ReasonCode.objects.create(
             code="RET", name="Return", direction=Direction.INCREASE
@@ -207,7 +207,7 @@ class PhysicalCountCorrectionApi(APITestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         self.corr_up = ReasonCode.objects.create(
             code="CORR_UP",

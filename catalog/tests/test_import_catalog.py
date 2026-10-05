@@ -43,7 +43,7 @@ class ImportSetup(TestCase):
 
 class OneRowMakesAGarmentItsSizesSkusAndPrice(ImportSetup):
     def test_a_single_row_builds_the_lot(self):
-        self.run_import(self.csv("White Shirt,White,BOTH,6;8;10,25000,2026-01-01\n"))
+        self.run_import(self.csv("White Shirt,White,BOTH,XS;S;M,25000,2026-01-01\n"))
 
         garment = Garment.objects.get(name="White Shirt")
         self.assertEqual(garment.school_level, Garment.SchoolLevel.BOTH)
@@ -66,7 +66,10 @@ class OneRowMakesAGarmentItsSizesSkusAndPrice(ImportSetup):
         self.assertEqual(Size.objects.count(), 2)
         self.assertEqual(Sku.objects.count(), 4)
 
-    def test_numeric_sizes_sort_by_value(self):
+    def test_numeric_sizes_still_sort_by_value(self):
+        """AsOne's own catalogue is XS-XXL, but the importer reads whatever a
+        client sends. A school that sizes by number must still get 6, 10, 12
+        in that order rather than "10, 12, 6" as text would give."""
         self.run_import(self.csv("White Shirt,White,BOTH,12;6;10,25000,2026-01-01\n"))
 
         order = list(Size.objects.order_by("sort_order").values_list("name", flat=True))
@@ -93,7 +96,7 @@ class OneRowMakesAGarmentItsSizesSkusAndPrice(ImportSetup):
 class RunningItTwiceChangesNothing(ImportSetup):
     """So a corrected file can be re-sent without cleaning up first."""
 
-    ROW = "White Shirt,White,BOTH,6;8;10,25000,2026-01-01\n"
+    ROW = "White Shirt,White,BOTH,XS;S;M,25000,2026-01-01\n"
 
     def test_a_second_run_creates_nothing(self):
         path = self.csv(self.ROW)
@@ -110,14 +113,14 @@ class RunningItTwiceChangesNothing(ImportSetup):
         """The database refuses two prices for one garment on one day, so a
         re-import with a fixed figure has to update in place."""
         self.run_import(self.csv(self.ROW))
-        self.run_import(self.csv("White Shirt,White,BOTH,6;8;10,27000,2026-01-01\n"))
+        self.run_import(self.csv("White Shirt,White,BOTH,XS;S;M,27000,2026-01-01\n"))
 
         self.assertEqual(GarmentPrice.objects.count(), 1)
         self.assertEqual(GarmentPrice.objects.get().unit_price, Decimal("27000"))
 
     def test_adding_a_size_later_adds_only_that_sku(self):
         self.run_import(self.csv(self.ROW))
-        self.run_import(self.csv("White Shirt,White,BOTH,6;8;10;12,25000,2026-01-01\n"))
+        self.run_import(self.csv("White Shirt,White,BOTH,XS;S;M;L,25000,2026-01-01\n"))
 
         self.assertEqual(Sku.objects.count(), 4)
 
@@ -183,7 +186,7 @@ class NothingIsHalfImported(ImportSetup):
 class ADryRunWritesNothing(ImportSetup):
     def test_it_reports_what_it_would_do(self):
         out = self.run_import(
-            self.csv("White Shirt,White,BOTH,6;8;10,25000,2026-01-01\n"), dry_run=True
+            self.csv("White Shirt,White,BOTH,XS;S;M,25000,2026-01-01\n"), dry_run=True
         )
 
         self.assertIn("would create", out)
@@ -191,7 +194,7 @@ class ADryRunWritesNothing(ImportSetup):
 
     def test_and_writes_none_of_it(self):
         self.run_import(
-            self.csv("White Shirt,White,BOTH,6;8;10,25000,2026-01-01\n"), dry_run=True
+            self.csv("White Shirt,White,BOTH,XS;S;M,25000,2026-01-01\n"), dry_run=True
         )
 
         self.assertEqual(Garment.objects.count(), 0)
@@ -246,7 +249,7 @@ class ReadingExcel(ImportSetup):
         return str(path)
 
     def test_an_xlsx_imports(self):
-        path = self.workbook([["White Shirt", "White", "BOTH", "6;8;10", 25000, date(2026, 1, 1)]])
+        path = self.workbook([["White Shirt", "White", "BOTH", "XS;S;M", 25000, date(2026, 1, 1)]])
 
         self.run_import(path)
 

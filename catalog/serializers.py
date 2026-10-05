@@ -124,6 +124,9 @@ class GarmentSerializer(serializers.ModelSerializer):
     school_level_display = serializers.CharField(
         source="get_school_level_display", read_only=True
     )
+    fit_group_display = serializers.CharField(
+        source="get_fit_group_display", read_only=True
+    )
     current_price = serializers.SerializerMethodField()
     sku_count = serializers.IntegerField(read_only=True)
 
@@ -138,39 +141,121 @@ class GarmentSerializer(serializers.ModelSerializer):
             "code",
             "school_level",
             "school_level_display",
+            "fit_group",
+            "fit_group_display",
             "colour",
+            "colour_code",
             "colour_hex",
             "is_active",
             "current_price",
             "sku_count",
         )
-        read_only_fields = ("code",)
+
+    def get_fields(self):
+        """`code` may be set when a garment is created, never afterwards.
+
+        It used to be read-only always, derived from the name. That was
+        right while the system chose its own codes and wrong the moment
+        AsOne's catalogue arrived: their codes are mnemonics, not a rule —
+        SWT for Sweater, TIE for Necktie, GYSH for Grey Shorts because
+        Green Shorts already had GSH. Roughly a third cannot be derived
+        from the name at all, so whoever adds the garment has to be able to
+        say.
+
+        Still frozen after creation. Every SKU beneath the garment is
+        numbered from it and those numbers are on shelf labels and pick
+        lists; a code that moved when somebody tidied a name would stop
+        matching the labels already on the shelves.
+
+        Left blank on creation it is still derived, so nothing has to type
+        one — see `Garment.save()`.
+        """
+        fields = super().get_fields()
+        if self.instance is not None:
+            fields["code"].read_only = True
+        return fields
 
     def validate(self, attrs):
-        """Reject a garment that already exists at the same school level.
+        """Reject a garment that already exists at the same level and fit.
 
         A single-field validator cannot do this: the constraint is on
-        `Lower(name)` **and** `school_level` together, because "White Shirt"
-        for Primary and for High School are two garments that may carry
-        different prices.
+        `Lower(name)`, `school_level` **and** `fit_group` together, because
+        "White Shirt" for Primary and for High School are two garments that
+        may carry different prices — and a P1–P4 sweater and a P5–P7 sweater
+        are two more.
 
         Left to the database this is an IntegrityError, which DRF reports as
         a 500.
         """
         name = attrs.get("name", getattr(self.instance, "name", None))
         level = attrs.get("school_level", getattr(self.instance, "school_level", None))
+        fit = attrs.get("fit_group", getattr(self.instance, "fit_group", "")) or ""
+
+        # The level stated may not be the level stored: `Garment.clean()`
+        # derives it from the fit group. Ask the same question here, or a
+        # garment whose fit group implies HS would be checked against the
+        # PS it was submitted with and the clash would be missed.
+        if fit:
+            level = Garment.PRICE_LIST_BY_FIT_GROUP[Garment.FitGroup(fit)]
+
+        # The SKU stem, which `unique_sku_stem` enforces. `code` used to be
+        # `unique=True`, which handed DRF a validator for free; making it
+        # writable and moving uniqueness onto the triple took that away, so
+        # a duplicate item code came back as a 500 from the database rather
+        # than a 400 naming the field.
+        code = (attrs.get("code", getattr(self.instance, "code", "")) or "").upper()
+        colour_code = (
+            attrs.get("colour_code", getattr(self.instance, "colour_code", "")) or ""
+        ).upper()
+
+        if code:
+            stem_clash = Garment.objects.filter(
+                fit_group=fit, code__iexact=code, colour_code__iexact=colour_code
+            )
+            if self.instance is not None:
+                stem_clash = stem_clash.exclude(pk=self.instance.pk)
+            if stem_clash.exists():
+                other = stem_clash.first()
+                raise serializers.ValidationError(
+                    {
+                        "code": (
+                            f'"{other.name}" already uses the code {code} here. '
+                            "Two garments sharing a code, fit group and colour "
+                            "code would generate the same SKU numbers."
+                        )
+                    }
+                )
+
+        # Both halves of the stem or neither — `Garment.clean()` and the
+        # database both say so, and saying it here names the field.
+        if bool(fit) != bool(colour_code):
+            missing = "colour_code" if fit else "fit_group"
+            raise serializers.ValidationError(
+                {
+                    missing: (
+                        "A garment needs both a fit group and a colour code, "
+                        "or neither."
+                    )
+                }
+            )
 
         if name and level:
-            clash = Garment.objects.filter(name__iexact=name, school_level=level)
+            clash = Garment.objects.filter(
+                name__iexact=name, school_level=level, fit_group=fit
+            )
             if self.instance is not None:
                 clash = clash.exclude(pk=self.instance.pk)
             if clash.exists():
+                where = (
+                    f"{dict(Garment.FitGroup.choices)[fit]} "
+                    if fit
+                    else f"{dict(Garment.SchoolLevel.choices)[level]} "
+                )
                 raise serializers.ValidationError(
                     {
                         "name": (
-                            f"A {dict(Garment.SchoolLevel.choices)[level]} garment "
-                            f"called \"{name}\" already exists. Names are not "
-                            "case-sensitive."
+                            f"A {where}garment called \"{name}\" already "
+                            "exists. Names are not case-sensitive."
                         )
                     }
                 )
@@ -475,3 +560,41 @@ def _looked_up_price(garment) -> str | None:
         return str(price_for(garment))
     except PriceNotSet:
         return None
+
+
+class CatalogueImportSerializer(serializers.Serializer):
+    """The upload behind `POST /api/catalog/import/`."""
+
+    file = serializers.FileField(
+        help_text="The catalogue as .xlsx, .xlsm or .csv."
+    )
+    sheet = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Which worksheet to read. Defaults to the first one.",
+    )
+    dry_run = serializers.BooleanField(
+        default=False,
+        help_text=(
+            "Check the file and report what would be imported, then roll it "
+            "back. Nothing is written."
+        ),
+    )
+
+
+class CatalogueImportResultSerializer(serializers.Serializer):
+    """What an import did, or would have done.
+
+    `unchanged` is the count of garments already present — worth showing,
+    because a re-import that reports nothing created and everything
+    unchanged is the system saying "this file is already loaded", which
+    looks like a failure until it is named.
+    """
+
+    garments = serializers.IntegerField()
+    sizes = serializers.IntegerField()
+    skus = serializers.IntegerField()
+    prices = serializers.IntegerField()
+    unchanged = serializers.IntegerField()
+    dry_run = serializers.BooleanField()
+    detail = serializers.CharField()

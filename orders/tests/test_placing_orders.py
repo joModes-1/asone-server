@@ -44,7 +44,7 @@ class OrderSetup(TestCase):
         self.high_school = self.sites["school_b"]      # Serere HS, High
         self.clerk = make_user("chrisis", User.Role.SCHOOL_STAFF, school=self.school)
 
-        self.size = Size.objects.create(name="10", sort_order=10)
+        self.size = Size.objects.create(name="S", sort_order=20)
         self.shirt = self.priced_sku("White Shirt", Level.BOTH, "25000.00")
         self.tunic = self.priced_sku("Blue Tunic", Level.PRIMARY, "30000.00")
         self.socks = self.priced_sku("Socks", Level.BOTH, "5000.00")

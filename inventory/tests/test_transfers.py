@@ -60,7 +60,7 @@ class TransferSetup(TestCase):
         GarmentPrice.objects.create(
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
-        self.size = Size.objects.create(name="10", sort_order=10)
+        self.size = Size.objects.create(name="S", sort_order=20)
         self.sku = Sku.objects.create(garment=garment, size=self.size)
 
     def stock_in(self, warehouse, quantity, value="25000.00", on=date(2026, 10, 1)):
@@ -346,7 +346,7 @@ class TransferApi(APITestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         post_movement(
             warehouse=self.sites["namayemba"],

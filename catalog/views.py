@@ -17,16 +17,18 @@ from datetime import date
 
 from django.db import transaction
 from django.db.models import Count
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from catalog import importing
 from accounts.models import User
-from accounts.permissions import AUTHENTICATED, MasterDataAccess
+from accounts.permissions import AUTHENTICATED, CanUpdateTables, MasterDataAccess
 
 from . import services
 from .models import (
@@ -42,6 +44,8 @@ from .models import (
     Warehouse,
 )
 from .serializers import (
+    CatalogueImportResultSerializer,
+    CatalogueImportSerializer,
     GarmentPriceSerializer,
     GarmentSerializer,
     KitItemSerializer,
@@ -248,7 +252,7 @@ class SchoolViewSet(viewsets.ModelViewSet):
 
 @extend_schema(tags=["Master data — products"])
 class SizeViewSet(viewsets.ModelViewSet):
-    """Garment sizes, shared across garments so "10" means one thing.
+    """Garment sizes, shared across garments so "M" means one thing.
 
     Leads only, per F05. Other roles reach a size through the SKU that uses
     it — `size_name` is on every SKU — so nothing is hidden from them in
@@ -262,7 +266,7 @@ class SizeViewSet(viewsets.ModelViewSet):
     # well, because the inventory screen filters by size and Finance is the
     # role that posts stock corrections against those rows — a filter that
     # 403s for the one person allowed to act on the table is the same bug
-    # the warehouse picker had. A size is the string "10"; there is nothing
+    # the warehouse picker had. A size is the string "M"; there is nothing
     # in it to protect.
     read_roles = (Role.FINANCE,)
 
@@ -587,3 +591,117 @@ class KitItemViewSet(viewsets.ModelViewSet):
     permission_classes = MASTER_DATA
     read_roles = (Role.SCHOOL_STAFF, Role.FINANCE)
     filterset_fields = ("kit", "sku")
+
+
+@extend_schema(
+    tags=["Catalogue"],
+    summary="Import a catalogue spreadsheet",
+    request={"multipart/form-data": CatalogueImportSerializer},
+    responses={
+        200: CatalogueImportResultSerializer,
+        400: OpenApiResponse(description="The file, or some of its rows, could not be read."),
+    },
+    description=(
+        "Upload a spreadsheet of garments and create the garments, sizes, "
+        "SKUs and prices in it.\n\n"
+        "**One row per garment, not per SKU.** `sizes` is semicolon-"
+        "separated, and the row's price applies to every one of them — AsOne "
+        "price garments, not sizes.\n\n"
+        "Required columns: `name`, `school_level`, `sizes`, `unit_price`. "
+        "Optional: `code`, `colour`, `colour_code`, `fit_group`, "
+        "`active_date`. The three that compose AsOne's five-part SKU number "
+        "(`UNI-NUR-CHS-XS-CHK`) are `fit_group`, `code` and `colour_code`; "
+        "without them SKUs fall back to the two-part form.\n\n"
+        "**Nothing is half-imported.** The whole file is one transaction, so "
+        "a bad row on line 40 rolls back lines 1-39 too. Every unreadable "
+        "row is reported with its line number, not just the first.\n\n"
+        "**Running it twice changes nothing** — garments are matched on "
+        "name, school level and fit group.\n\n"
+        "Send `dry_run=true` first: it reports what would happen and writes "
+        "nothing."
+    ),
+)
+class CatalogueImportView(APIView):
+    """`POST /api/catalog/import/` — the Garments tab's import.
+
+    Deliberately **not** an action on `GarmentViewSet`. An import creates
+    sizes, SKUs and prices as well as garments, so hanging it off the
+    garment resource would understate what it does.
+
+    Behind `CanUpdateTables` rather than `MasterDataAccess`: the latter lets
+    several roles *read* master data, and this writes a catalogue.
+
+    Bulk-creating stock is a different operation with different risks and
+    lives elsewhere — see the inventory count import, which posts
+    adjustments to an append-only ledger and can only be undone by more
+    adjustments. This one creates products, which can be edited.
+    """
+
+    permission_classes = [*AUTHENTICATED, CanUpdateTables]
+    serializer_class = CatalogueImportSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        form = CatalogueImportSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        upload = form.validated_data["file"]
+        dry_run = form.validated_data["dry_run"]
+
+        try:
+            tally = importing.import_catalogue(
+                upload,
+                filename=upload.name or "",
+                sheet=form.validated_data.get("sheet") or None,
+                dry_run=dry_run,
+            )
+        except importing.CatalogueFileError as exc:
+            # About the file as a whole — wrong type, no rows, a missing
+            # column. Named on `file`, because that is the field the person
+            # chose and the one they have to change.
+            raise DRFValidationError({"file": [str(exc)]}) from None
+        except importing.RowsRejected as exc:
+            # Every bad row, not the first. Fixing a spreadsheet one error
+            # per run is miserable when there are thirty, and a screen can
+            # show them all at once in a way a terminal cannot.
+            #
+            # Returned rather than raised. `DRFValidationError` runs every
+            # value through `ErrorDetail`, which stringifies recursively —
+            # the line numbers came out as "3" and "4" and a client could
+            # not sort or link by them without parsing them back. A plain
+            # 400 keeps `line` an integer.
+            return Response(
+                {
+                    "detail": (
+                        f"Nothing was imported. {len(exc.errors)} "
+                        f"{'row' if len(exc.errors) == 1 else 'rows'} could "
+                        "not be read."
+                    ),
+                    "rows": exc.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        created = tally["garments"] + tally["skus"] + tally["prices"]
+        if dry_run:
+            detail = (
+                f"Dry run — nothing was written. {tally['garments']} garments, "
+                f"{tally['skus']} SKUs and {tally['prices']} prices would be created."
+            )
+        elif created:
+            detail = (
+                f"Imported {tally['garments']} garments, {tally['sizes']} sizes, "
+                f"{tally['skus']} SKUs and {tally['prices']} prices."
+            )
+        else:
+            # Worth saying plainly. A re-import that creates nothing looks
+            # like a failure until somebody explains that it means the file
+            # is already loaded.
+            detail = (
+                f"Nothing to do — all {tally['unchanged']} garments in that "
+                "file are already in the catalogue."
+            )
+
+        return Response(
+            CatalogueImportResultSerializer({**tally, "dry_run": dry_run, "detail": detail}).data
+        )

@@ -46,7 +46,7 @@ class CorrectingACountEitherWay(TestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
 
         # Created here rather than relied on from a migration: master data

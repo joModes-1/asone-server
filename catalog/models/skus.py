@@ -16,7 +16,7 @@ class Sku(models.Model):
     `number` is AsOne's control number: system assigned, unique, and **never
     reused**, even after a SKU is retired.
 
-    It reads as `GTR-14` — the garment's code, then the size. It used to be a
+    It reads as `GTR-L` — the garment's code, then the size. It used to be a
     bare sequence number, `100015`, which was unique and told a clerk holding
     the garment nothing: they could not check a shelf label against a pick
     list without looking the number up first.
@@ -28,10 +28,17 @@ class Sku(models.Model):
     """
 
     number = models.CharField(
-        max_length=24,
+        # 32, not 24: the five-part shape runs to 20 for AsOne's own
+        # catalogue ("UNI-P14-GYDR-XXL-GRY") and further for a garment with
+        # a longer item code. 24 would have fitted today's data and failed
+        # on the first eight-character code somebody entered.
+        max_length=32,
         unique=True,
         editable=False,
-        help_text="System assigned from the garment and size, for example GTR-14.",
+        help_text=(
+            "System assigned from the garment and size, for example "
+            "UNI-NUR-CHS-XS-CHK."
+        ),
     )
     garment = models.ForeignKey(
         "catalog.Garment", on_delete=models.PROTECT, related_name="skus"

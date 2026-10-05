@@ -386,9 +386,18 @@ def garment_code(garment, *, taken=None) -> str:
     stem = _stem(garment.name)
 
     if taken is None:
+        # Scoped to the garments this one could actually collide with: the
+        # same fit group and colour code. A SKU number carries all three,
+        # so "Sweater" at P1–P4 and "Sweater" at P5–P7 may both be SWT and
+        # a global search would have handed the second one SWT2 for no
+        # reason — and made its SKU numbers disagree with AsOne's.
         taken = set(
             Garment.objects.exclude(pk=garment.pk)
             .exclude(code="")
+            .filter(
+                fit_group=garment.fit_group,
+                colour_code=garment.colour_code,
+            )
             .values_list("code", flat=True)
         )
 
@@ -401,25 +410,62 @@ def garment_code(garment, *, taken=None) -> str:
     return f"{stem}{suffix}"
 
 
+#: The first segment of every SKU number.
+#:
+#: Constant, because AsOne's 2027 workbook uses "UNI" on all 308 of theirs —
+#: including the sport and casual items, whose category it does not encode.
+#: Named here rather than inlined so that if they ever do want SPT- and CAS-
+#: prefixes, there is one place that decides.
+SKU_PREFIX = "UNI"
+
+
 def sku_code(garment, size) -> str:
     """The code printed on shelf labels, pick lists and packing lists.
 
-    `GTR-14`: the garment's code, then the size. Both halves are already
-    unique on their own and a SKU is one garment in one size, so the pair is
-    unique without needing a counter — the `unique_sku_per_garment_size`
-    constraint is the same statement in the database.
+    Five parts, which is the shape AsOne gave us::
 
-    This replaced a bare sequence number. `100015` was unique and told a
-    clerk holding the garment nothing; they could not check a label against
-    a pick list without looking the number up first.
+        UNI - NUR - CHS - XS - CHK
+         |     |     |     |     colour code      (garment)
+         |     |     |     size                   (size)
+         |     |     item code                    (garment)
+         |     fit group                          (garment)
+         constant
 
-    Non-alphanumerics are stripped from the size, so the size named "E2E-12"
-    does not put a second hyphen in the code and make it look like three
-    parts instead of two.
+    Everything except the item code is a lookup or an attribute already on
+    the row, which is what makes the number generated rather than typed.
+    The item code is the one human choice — a third of AsOne's cannot be
+    derived from the garment's name (SWT for Sweater, TIE for Necktie) — and
+    it is chosen once per garment, not once per SKU. Twenty-seven item codes
+    produce their three hundred SKUs.
+
+    ## Garments that predate the fit group and colour code
+
+    They fall back to the two-part `GTR-L`, which is what every existing SKU
+    already carries. Mixing two shapes is not lovely, but the alternative is
+    worse: SKU numbers are frozen once assigned, because they are printed on
+    shelf labels and pick lists, so there is no version of this where old
+    rows quietly become five-part. Fill in a garment's fit group and colour
+    code and its *new* SKUs take the full shape.
+
+    Non-alphanumerics are stripped from the size, so a size named "XL-TALL"
+    does not put an extra hyphen in the code and make it look like six
+    parts instead of five.
     """
     size_token = "".join(
         character for character in size.name if character.isalnum()
     ).upper()
+
+    if garment.fit_group and garment.colour_code:
+        return "-".join(
+            (
+                SKU_PREFIX,
+                garment.fit_group,
+                garment.code,
+                size_token,
+                garment.colour_code.upper(),
+            )
+        )
+
     return f"{garment.code}-{size_token}"
 
 

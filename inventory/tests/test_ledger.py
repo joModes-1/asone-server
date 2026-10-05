@@ -39,7 +39,7 @@ class LedgerSetup(TestCase):
         GarmentPrice.objects.create(
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
-        self.size = Size.objects.create(name="10", sort_order=10)
+        self.size = Size.objects.create(name="S", sort_order=20)
         self.sku = Sku.objects.create(garment=garment, size=self.size)
 
     def move(self, quantity, warehouse=None, on=TODAY, sku=None):

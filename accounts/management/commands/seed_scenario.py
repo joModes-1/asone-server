@@ -155,13 +155,13 @@ class Command(BaseCommand):
             return Sku.objects.get(garment__name=garment, size__name=size)
 
         return {
-            "white_shirt": sku("White Shirt", "8"),
-            "blue_tunic": sku("Blue Tunic", "8"),
-            "grey_trousers": sku("Grey Trousers", "8"),
-            "navy_skirt": sku("Navy Skirt", "8"),
-            "grey_shorts": sku("Grey Shorts", "8"),
-            "jumper": sku("Jumper", "8"),
-            "socks": sku("Socks", "10"),
+            "white_shirt": sku("White Shirt", "XS"),
+            "blue_tunic": sku("Blue Tunic", "XS"),
+            "grey_trousers": sku("Grey Trousers", "XS"),
+            "navy_skirt": sku("Navy Skirt", "XS"),
+            "grey_shorts": sku("Grey Shorts", "XS"),
+            "jumper": sku("Jumper", "XS"),
+            "socks": sku("Socks", "OS"),
             "ps_kit": Kit.objects.get(kit_number="PS-STARTER-01"),
             "hs_kit": Kit.objects.get(kit_number="HS-STARTER-01"),
         }

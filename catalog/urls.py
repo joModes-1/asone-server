@@ -27,6 +27,10 @@ router.register("kits", views.KitViewSet, "kit")
 router.register("kit-items", views.KitItemViewSet, "kit-item")
 
 urlpatterns = [
+    # Not an action on the garment viewset: an import creates sizes, SKUs
+    # and prices as well as garments, so hanging it off one resource would
+    # understate what it does.
+    path("import/", views.CatalogueImportView.as_view(), name="catalogue-import"),
     path("price-lists/", views.PriceListView.as_view(), name="price-list"),
     path("price-lists/gaps/", views.PriceGapView.as_view(), name="price-gaps"),
     # The kit half of F15/F51. Mounted under price-lists/ rather than kits/

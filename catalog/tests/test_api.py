@@ -35,7 +35,7 @@ READ_AUDIENCE = {
     # Finance reads sizes, and only reads them. The inventory screen filters
     # by size, and Finance is the role that posts count corrections against
     # those rows — the same reasoning as warehouses below. A size is the
-    # string "10"; writing stays with the leads. Widened 17 September 2026.
+    # string "M"; writing stays with the leads. Widened 17 September 2026.
     "catalog:size-list": {Role.FINANCE},
     "catalog:garment-price-list": {Role.SCHOOL_STAFF, Role.FINANCE},
     # Finance for the same reason: it posts the corrections and write-offs
@@ -78,8 +78,8 @@ class CatalogSetup(APITestCase):
         }
         self.shirt = make_garment("White Shirt", Garment.SchoolLevel.PRIMARY)
         make_price(self.shirt, "25000.00", IN_FORCE_TODAY)
-        self.size_10 = Size.objects.create(name="10", sort_order=10)
-        self.sku = Sku.objects.create(garment=self.shirt, size=self.size_10)
+        self.size_s = Size.objects.create(name="S", sort_order=20)
+        self.sku = Sku.objects.create(garment=self.shirt, size=self.size_s)
 
     def as_role(self, role):
         self.client.force_authenticate(self.users[role])
@@ -168,11 +168,11 @@ class WriteAccessTests(CatalogSetup):
 class SkuApiTests(CatalogSetup):
     def test_the_control_number_is_assigned_not_supplied(self):
         self.as_role(Role.PROGRAM_LEAD)
-        size_12 = Size.objects.create(name="12", sort_order=12)
+        size_m = Size.objects.create(name="M", sort_order=30)
 
         response = self.client.post(
             reverse("catalog:sku-list"),
-            {"garment": self.shirt.pk, "size": size_12.pk, "number": "000001"},
+            {"garment": self.shirt.pk, "size": size_m.pk, "number": "000001"},
             format="json",
         )
 
@@ -188,7 +188,7 @@ class SkuApiTests(CatalogSetup):
     def test_an_unpriced_sku_reports_null_not_zero(self):
         self.as_role(Role.PROGRAM_LEAD)
         socks = make_garment("Socks")
-        sku = Sku.objects.create(garment=socks, size=self.size_10)
+        sku = Sku.objects.create(garment=socks, size=self.size_s)
 
         response = self.client.get(reverse("catalog:sku-detail", args=[sku.pk]))
         self.assertIsNone(response.data["unit_price"])
@@ -197,7 +197,7 @@ class SkuApiTests(CatalogSetup):
         self.as_role(Role.PROGRAM_LEAD)
         response = self.client.post(
             reverse("catalog:sku-list"),
-            {"garment": self.shirt.pk, "size": self.size_10.pk},
+            {"garment": self.shirt.pk, "size": self.size_s.pk},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -383,7 +383,7 @@ class KitApiTests(CatalogSetup):
 
     def test_a_kit_missing_a_component_price_reports_null_not_an_error(self):
         unpriced = make_garment("Unpriced Blazer")
-        size = Size.objects.create(name="14", sort_order=14)
+        size = Size.objects.create(name="L", sort_order=40)
         unpriced_sku = Sku.objects.create(garment=unpriced, size=size)
 
         kit = make_kit()
@@ -423,7 +423,7 @@ class FinanceReadsWhatItCorrectsAgainst(APITestCase):
         self.client.force_authenticate(self.finance)
 
     def test_finance_may_read_sizes(self):
-        Size.objects.create(name="10", sort_order=10)
+        Size.objects.create(name="S", sort_order=20)
 
         self.assertEqual(
             self.client.get(reverse("catalog:size-list")).status_code,

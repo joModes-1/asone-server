@@ -32,7 +32,7 @@ class AdjustmentFilters(APITestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
         self.damage = ReasonCode.objects.create(
             code="DMG", name="Damaged", direction=Direction.DECREASE
@@ -122,7 +122,7 @@ class TransferFilters(APITestCase):
             garment=garment, unit_price=Decimal("25000.00"), active_date=date(2026, 1, 1)
         )
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="10", sort_order=10)
+            garment=garment, size=Size.objects.create(name="S", sort_order=20)
         )
 
         post_movement(
@@ -188,7 +188,7 @@ class LedgerFilters(APITestCase):
 
         garment = Garment.objects.create(name="Blue Trousers")
         self.sku = Sku.objects.create(
-            garment=garment, size=Size.objects.create(name="12", sort_order=12)
+            garment=garment, size=Size.objects.create(name="M", sort_order=30)
         )
 
         # January and June, so a bound between them separates the two.

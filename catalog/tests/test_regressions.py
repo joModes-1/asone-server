@@ -29,7 +29,7 @@ class RegressionSetup(APITestCase):
         self.price = GarmentPrice.objects.create(
             garment=self.shirt, unit_price=Decimal("25000.00"), active_date=IN_FORCE
         )
-        self.size = Size.objects.create(name="10", sort_order=10)
+        self.size = Size.objects.create(name="S", sort_order=20)
         self.sku = Sku.objects.create(garment=self.shirt, size=self.size)
 
 
