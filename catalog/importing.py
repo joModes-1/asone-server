@@ -104,14 +104,35 @@ class _DryRun(Exception):
 # ---------------------------------------------------------------------------
 
 
+#: Column names that mean the same thing, mapped to the one this reads.
+#:
+#: American spelling first, because AsOne's own workbook uses "Color" and a
+#: column spelled a way this did not recognise was not refused — it was
+#: silently ignored, so every colour imported blank and nothing said why. A
+#: quietly dropped column is worse than a rejected file.
+COLUMN_ALIASES = {
+    "color": "colour",
+    "color_code": "colour_code",
+    "garment": "name",
+    "garment_name": "name",
+    "price": "unit_price",
+    "unit_cost": "unit_price",
+    "class_band": "fit_group",
+    "band": "fit_group",
+    "item_code": "code",
+    "sku_code": "code",
+}
+
+
 def _key(name):
     """Column names as they are meant, not as they were typed.
 
     A spreadsheet that has been passed around tends to have "Unit Price" or
     " name " rather than the exact header, so the keys are normalised rather
-    than demanded.
+    than demanded — and a few well-known synonyms are accepted outright.
     """
-    return str(name or "").strip().lower().replace(" ", "_")
+    key = str(name or "").strip().lower().replace(" ", "_")
+    return COLUMN_ALIASES.get(key, key)
 
 
 def read_rows(source, *, filename, sheet=None):

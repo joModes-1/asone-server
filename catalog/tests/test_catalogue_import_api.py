@@ -12,6 +12,7 @@ whole file is refused.
 """
 
 import io
+from decimal import Decimal
 
 from django.urls import reverse
 from rest_framework import status
@@ -212,3 +213,41 @@ class WhoMayImport(ImportSetup):
         self.client.force_authenticate(None)
 
         self.assertEqual(self.post().status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class ColumnsSpelledTheOtherWay(ImportSetup):
+    """A header this did not recognise used to be ignored, not refused.
+
+    AsOne's own workbook says "Color" and "Garment". Neither matched, so the
+    colour imported blank and the name came back missing — and nothing said
+    why. A quietly dropped column is worse than a rejected file.
+    """
+
+    def test_american_colour_is_understood(self):
+        self.post(
+            "name,school_level,sizes,unit_price,Color\n"
+            "Checked Shirt,PS,XS;S,24000,Checked\n"
+        )
+
+        self.assertEqual(Garment.objects.get().colour, "Checked")
+
+    def test_garment_is_accepted_for_name(self):
+        """What her sheet calls the column."""
+        response = self.post("Garment,school_level,sizes,unit_price\nSweater,PS,XS;S,45000\n")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Garment.objects.get().name, "Sweater")
+
+    def test_price_is_accepted_for_unit_price(self):
+        response = self.post("name,school_level,sizes,Price\nSocks,BOTH,OS,5000\n")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(GarmentPrice.objects.get().unit_price, Decimal("5000"))
+
+    def test_the_canonical_spellings_still_work(self):
+        self.post(
+            "name,school_level,sizes,unit_price,colour\n"
+            "Checked Shirt,PS,XS;S,24000,Checked\n"
+        )
+
+        self.assertEqual(Garment.objects.get().colour, "Checked")
