@@ -524,3 +524,60 @@ class DeletingMasterDataIsTheProgramLeadsAlone(APITestCase):
             ).status_code,
             status.HTTP_403_FORBIDDEN,
         )
+
+
+class EveryRoleCanSeeAColour(APITestCase):
+    """Colour lives on the garment, and garments are leads-only (F05).
+
+    So the inventory screen showed an empty Colour column to Finance, the
+    warehouse and the schools: the data was there and they were simply not
+    allowed to fetch the row it sat on. The SKU reads it through, the same
+    way it already reads the school level.
+    """
+
+    def setUp(self):
+        self.sites = build_sites()
+        garment = Garment.objects.create(
+            name="Checked Shirt",
+            fit_group=Garment.FitGroup.NURSERY,
+            colour="Checked",
+            colour_code="CHK",
+            colour_hex="#8B5A2B",
+        )
+        size = Size.objects.create(name="M", sort_order=30)
+        self.sku = Sku.objects.create(garment=garment, size=size)
+        self.url = reverse("catalog:sku-list")
+
+    def row(self, user):
+        self.client.force_authenticate(user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data["results"][0]
+
+    def test_finance_sees_the_colour_without_reading_garments(self):
+        row = self.row(make_user("fiona", User.Role.FINANCE))
+
+        self.assertEqual(row["garment_colour"], "Checked")
+        self.assertEqual(row["garment_colour_hex"], "#8B5A2B")
+
+    def test_the_warehouse_sees_it_too(self):
+        row = self.row(
+            make_user("julius", User.Role.WAREHOUSE_STAFF, warehouse=self.sites["namayemba"])
+        )
+
+        self.assertEqual(row["garment_colour"], "Checked")
+
+    def test_and_a_school(self):
+        row = self.row(
+            make_user("sarah", User.Role.SCHOOL_STAFF, school=self.sites["school_a"])
+        )
+
+        self.assertEqual(row["garment_colour"], "Checked")
+
+    def test_those_roles_still_may_not_read_the_garment_itself(self):
+        """The permission is right; only the one field reads through."""
+        self.client.force_authenticate(make_user("fiona2", User.Role.FINANCE))
+
+        response = self.client.get(reverse("catalog:garment-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

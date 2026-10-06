@@ -384,6 +384,20 @@ class SkuSerializer(serializers.ModelSerializer):
     garment_school_level = serializers.CharField(
         source="garment.school_level", read_only=True
     )
+
+    # Colour, read through the same way the school level is.
+    #
+    # Colour lives on the garment and garments are leads-only (F05), so every
+    # other role — Finance, warehouse, school — saw an empty Colour column on
+    # the inventory screen: the data was there and they simply were not
+    # allowed to fetch the row it sat on. Reading it through here answers the
+    # question without widening a permission that is correct as it stands,
+    # and costs nothing: the viewset already selects the garment.
+    garment_colour = serializers.CharField(source="garment.colour", read_only=True)
+    garment_colour_hex = serializers.CharField(
+        source="garment.colour_hex", read_only=True
+    )
+
     unit_price = serializers.SerializerMethodField()
 
     class Meta:
@@ -394,6 +408,8 @@ class SkuSerializer(serializers.ModelSerializer):
             "garment",
             "garment_name",
             "garment_school_level",
+            "garment_colour",
+            "garment_colour_hex",
             "size",
             "size_name",
             "description",
