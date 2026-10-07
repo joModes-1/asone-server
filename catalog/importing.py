@@ -58,8 +58,8 @@ REQUIRED_COLUMNS = {"name", "school_level", "sizes", "unit_price"}
 
 #: Everything a file may carry, for the message when something is missing.
 KNOWN_COLUMNS = (
-    "name, code, colour, colour_code, school_level, fit_group, sizes, "
-    "unit_price, active_date"
+    "name, description, code, colour, colour_code, school_level, fit_group, "
+    "sizes, unit_price, active_date"
 )
 
 #: Read off the models so the accepted values cannot drift from them.
@@ -370,6 +370,11 @@ def parse_row(row):
             "fit group and the colour code"
         )
 
+    # AsOne's own wording for the garment. Optional: a file without it still
+    # imports, and the garment simply carries none.
+    description = _text(row.get("description"))
+    _within_length(description, "description", "description")
+
     item_code = _text(row.get("code")).upper()
     if item_code and not item_code.isalnum():
         raise RowError(f"code {item_code!r} must be letters and digits only")
@@ -383,6 +388,7 @@ def parse_row(row):
 
     return {
         "name": name,
+        "description": description,
         "colour": _text(row.get("colour")),
         "colour_code": colour_code,
         "school_level": level,
@@ -454,6 +460,7 @@ def _import_garment(entry, tally):
         fit_group=entry["fit_group"],
         defaults={
             "name": entry["name"],
+            "description": entry["description"],
             "colour": entry["colour"],
             "colour_code": entry["colour_code"],
             "school_level": level,

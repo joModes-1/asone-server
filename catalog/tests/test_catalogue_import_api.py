@@ -251,3 +251,39 @@ class ColumnsSpelledTheOtherWay(ImportSetup):
         )
 
         self.assertEqual(Garment.objects.get().colour, "Checked")
+
+
+class TheGarmentDescription(ImportSetup):
+    """AsOne's own wording, which their workbook repeats against every SKU
+    row and which we previously dropped on the floor."""
+
+    def test_it_is_imported_onto_the_garment(self):
+        self.post(
+            "name,description,school_level,sizes,unit_price\n"
+            "Checked Skirt,School Uniform checked skirt for S1\u2013S4,HS,XS;S,24000\n"
+        )
+
+        self.assertEqual(
+            Garment.objects.get().description,
+            "School Uniform checked skirt for S1\u2013S4",
+        )
+
+    def test_the_sku_keeps_its_own(self):
+        """Theirs never varies by size — checked across all 53 of their
+        garment-and-band combinations. The SKU's own description carries the
+        size, and pick lists print in description sequence."""
+        self.post(
+            "name,description,school_level,sizes,unit_price\n"
+            "Checked Skirt,School Uniform checked skirt,HS,XS;S,24000\n"
+        )
+
+        descriptions = sorted(Sku.objects.values_list("description", flat=True))
+        self.assertEqual(len(set(descriptions)), 2)
+        for text in descriptions:
+            self.assertIn("size", text)
+
+    def test_a_file_without_one_still_imports(self):
+        response = self.post("name,school_level,sizes,unit_price\nSocks,BOTH,OS,5000\n")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Garment.objects.get().description, "")

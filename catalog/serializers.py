@@ -139,6 +139,7 @@ class GarmentSerializer(serializers.ModelSerializer):
             # Every SKU beneath this garment is numbered `<code>-<size>`, so
             # a screen that previews a SKU number needs the genuine one.
             "code",
+            "description",
             "school_level",
             "school_level_display",
             "fit_group",
@@ -393,6 +394,11 @@ class SkuSerializer(serializers.ModelSerializer):
     # allowed to fetch the row it sat on. Reading it through here answers the
     # question without widening a permission that is correct as it stands,
     # and costs nothing: the viewset already selects the garment.
+    # AsOne's own wording for the garment, read through for the same reason
+    # colour is: it lives on a row most roles may not fetch.
+    garment_description = serializers.CharField(
+        source="garment.description", read_only=True
+    )
     garment_colour = serializers.CharField(source="garment.colour", read_only=True)
     garment_colour_hex = serializers.CharField(
         source="garment.colour_hex", read_only=True
@@ -408,6 +414,7 @@ class SkuSerializer(serializers.ModelSerializer):
             "garment",
             "garment_name",
             "garment_school_level",
+            "garment_description",
             "garment_colour",
             "garment_colour_hex",
             "size",

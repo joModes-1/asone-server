@@ -141,6 +141,24 @@ class Garment(models.Model):
         ),
     )
 
+    #: What this garment is, in AsOne's own words — "School Uniform checked
+    #: shirt for Nursery".
+    #:
+    #: On their Phase 1 list as "Products: garments, descriptions, active or
+    #: inactive", and in their 2027 workbook as a column repeated against
+    #: every SKU row. It belongs here rather than on the SKU: their text
+    #: never varies by size, and all 53 of theirs describe the garment.
+    #:
+    #: `Sku.description` stays generated ("Checked Skirt Checked size XS").
+    #: Copying this onto every SKU would give all six sizes of a garment the
+    #: same text, and pick lists print "in Description sequence" (p.2) — so
+    #: the sizes within a garment would come out in no particular order.
+    description = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text='What this garment is, e.g. "School Uniform checked shirt for Nursery".',
+    )
+
     colour = models.CharField(max_length=40, blank=True)
 
     # The colour's short code: Checked -> CHK, Grey -> GRY. Third part of a
