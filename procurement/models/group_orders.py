@@ -8,15 +8,21 @@ AsOne's definition (p.2):
 One group order covers every Tailoring Center, and the production orders
 placed on individual TCs should sum back up to it.
 
-OPEN QUESTION Q14 — the pack contradicts itself. The definition above says
-consolidated across all three TCs, but the header layout on p.4 gives a Group
-Order a single `TC` and `Ship to Warehouse`, which would make it
-indistinguishable from a production order and would make "production orders
-sum up to the group order" meaningless.
+Q14 — SETTLED, 8 October 2026. The pack appeared to contradict itself: the
+definition above says consolidated across all three TCs, while the header
+layout on p.4 gives a Group Order a single `TC` and `Ship to Warehouse`.
 
-Modelled to the definition: no TC, no warehouse. If AsOne confirms the p.4
-header instead, this gains two nullable foreign keys — a small change, which
-is why the more useful reading was taken now rather than waiting.
+AsOne have confirmed the definition. A group order is the order the
+warehouses place across **all** the Tailoring Centers, entered once, and the
+production orders — one per TC — sum up to it. So there is no TC and no
+warehouse here, and the p.4 header belongs to the production order beside it
+on that page. Those two fields are what make a production order a production
+order; putting them here would have made the two documents the same thing
+and made "production orders sum up to the group order" meaningless.
+
+`reconcile()` in procurement/services.py is the other half of this: it
+totals every production order under the group order whatever TC it went to,
+pinned by `test_orders_on_different_tcs_sum_to_the_one_group_order`.
 
 OPEN QUESTION Q11 — whether the Group Order stays relevant beyond the initial
 capital phase is still with the client. Nothing here assumes it does:

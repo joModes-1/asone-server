@@ -180,13 +180,13 @@ class ReconciliationTests(TestCase):
             order_date=ORDER_DATE,
         )
 
-    def place(self, quantity, status=OrderStatus.OPEN):
+    def place(self, quantity, status=OrderStatus.OPEN, tc=None, warehouse=None):
         order = create_production_order(
             created_by=self.lead,
             lines=[{"sku": self.shirt, "quantity": quantity}],
             order_date=ORDER_DATE,
-            tailoring_center=self.tc,
-            warehouse=self.sites["namayemba"],
+            tailoring_center=tc or self.tc,
+            warehouse=warehouse or self.sites["namayemba"],
             group_order=self.group,
         )
         if status != OrderStatus.OPEN:
@@ -213,6 +213,28 @@ class ReconciliationTests(TestCase):
         self.place(600)
 
         self.assertEqual(reconcile(self.group)[0]["difference"], 100)
+
+    def test_orders_on_different_tcs_sum_to_the_one_group_order(self):
+        """The whole point of a group order, confirmed by AsOne.
+
+        It is the order the warehouses place across **all** the Tailoring
+        Centers, entered once, and the production orders — one per TC, and
+        there are three — sum up to it. So the reconciliation counts every
+        production order under the group order whatever TC it went to and
+        whatever warehouse it is bound for. A per-TC total would make the
+        requirement look permanently unmet.
+        """
+        rwanyabihuka = TailoringCenter.objects.create(name="Rwanyabihuka")
+        serere_tc = TailoringCenter.objects.create(name="Serere TC")
+
+        self.place(200)
+        self.place(200, tc=rwanyabihuka, warehouse=self.sites["serere"])
+        self.place(100, tc=serere_tc, warehouse=self.sites["serere"])
+
+        row = reconcile(self.group)[0]
+        self.assertEqual(row["requested"], 500)
+        self.assertEqual(row["ordered"], 500)
+        self.assertEqual(row["difference"], 0)
 
     def test_cancelled_orders_do_not_count_towards_the_requirement(self):
         """Otherwise the requirement looks covered by goods nobody is making."""
