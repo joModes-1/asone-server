@@ -105,9 +105,18 @@ class Kit(models.Model):
         FitGroup.S5_S6: SchoolLevel.HIGH,
     }
 
+    # `blank=True` so `save()` can compose it from the cohort. Django
+    # validates fields *before* `clean()` and `save()` run, so a field marked
+    # required here would be refused as empty before the number existed. It
+    # is still required in practice — `clean()` refuses a kit that ends up
+    # without one — and the requirement is stated there, beside the rule.
     kit_number = models.CharField(
         max_length=20,
-        help_text='Entered by whoever creates the kit, e.g. "PS-STARTER-01".',
+        blank=True,
+        help_text=(
+            "Composed from the class band, gender, residence and size — "
+            'KIT-NUR-B-DAY-XS. Typed only for a kit that states no cohort.'
+        ),
     )
     name = models.CharField(max_length=120, help_text='For example "PS Starter Kit".')
 
@@ -253,11 +262,20 @@ class Kit(models.Model):
         if not self.school_level and "school_level" not in errors:
             errors["school_level"] = "This field cannot be blank."
 
+        # The number is composed from the cohort, so a kit that states one
+        # needs no number typed. A kit that states none has nothing to
+        # compose from and must carry one.
+        if not self.kit_number and not (self.is_cohort_specific and self.size_id):
+            errors["kit_number"] = (
+                "A kit that is not cut for a particular cohort needs a number "
+                "of its own — there is nothing to compose one from."
+            )
+
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        """Derive the price list here too, not only in `clean()`.
+        """Compose the number, and derive the price list here too.
 
         `objects.create()` skips `clean()`, so a kit made that way kept
         whatever school level it was handed while a validated one got the
@@ -270,6 +288,21 @@ class Kit(models.Model):
             self.school_level = self.PRICE_LIST_BY_FIT_GROUP[
                 self.FitGroup(self.fit_group)
             ]
+
+        # Composed from the cohort, never typed — `KIT-NUR-B-DAY-XS`, which
+        # is the shape AsOne's own 2027 workbook uses. Assigned only when
+        # the kit states a cohort; a generic kit keeps the number it was
+        # given. See `catalog.services.kit_number`.
+        #
+        # Recomposed on every save rather than only when blank, because the
+        # four parts are editable: changing a kit from Day to Boarder has to
+        # change its number, or the number describes the wrong kit. That is
+        # the opposite of `Sku.number`, which is frozen — a SKU number goes
+        # on a shelf label, a kit number does not.
+        if self.is_cohort_specific and self.size_id:
+            from catalog.services import kit_number
+
+            self.kit_number = kit_number(self)
 
         super().save(*args, **kwargs)
 
@@ -337,6 +370,31 @@ class KitItem(models.Model):
                     f"{self.sku.number} is a {garment.get_school_level_display()} "
                     f"garment and does not belong in a "
                     f"{self.kit.get_school_level_display()} kit."
+                )
+
+        # A kit cut for one class band is made of garments cut for that
+        # band — with one real exception, the same one the size rule has
+        # below. Socks and neckties are marked ALL and go into every kit.
+        #
+        # Narrower than the price-list rule above, and it has to be: Nursery,
+        # P1-P4 and P5-P7 are all Primary, so that rule happily allowed an
+        # Upper Primary sweater in a Nursery kit. AsOne's catalogue has
+        # "Sweater" at five bands precisely because they are five garments.
+        #
+        # Checked against AsOne's 2027 bill of materials: of 828 component
+        # lines, 120 are a band other than the kit's, and every one of the
+        # 120 is an ALL item. So the rule is exact, not a tolerance.
+        #
+        # A kit stating no band has nothing to check against and is left to
+        # the price-list rule alone.
+        if self.sku_id and self.kit_id and self.kit.fit_group:
+            garment = self.sku.garment
+            if not garment.fits_class_band(self.kit.fit_group):
+                errors["sku"] = (
+                    f"{self.sku.number} is cut for "
+                    f"{garment.get_fit_group_display()}, but this kit is for "
+                    f"{self.kit.get_fit_group_display()}. Only all-band items "
+                    "like socks go into a kit for a different band."
                 )
 
         # A kit built in one size is made of components in that size — with

@@ -26,7 +26,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from catalog import importing
+from catalog import importing, kit_importing
 from accounts.models import User
 from accounts.permissions import AUTHENTICATED, CanUpdateTables, MasterDataAccess
 
@@ -48,6 +48,8 @@ from .serializers import (
     CatalogueImportSerializer,
     GarmentPriceSerializer,
     GarmentSerializer,
+    KitImportResultSerializer,
+    KitImportSerializer,
     KitItemSerializer,
     KitSerializer,
     MinimumStockLevelSerializer,
@@ -571,14 +573,40 @@ class KitViewSet(viewsets.ModelViewSet):
     serializer_class = KitSerializer
     permission_classes = MASTER_DATA
     read_roles = (Role.SCHOOL_STAFF, Role.FINANCE)
-    filterset_fields = ("school_level", "is_active")
+    # The cohort fields are filterable because that is the whole reason they
+    # were modelled rather than left inside the kit's name: a school ordering
+    # for a Nursery boy boarder has 120 kits to choose from, and narrowing by
+    # band, gender and residence leaves the six that differ only by size.
+    filterset_fields = (
+        "school_level",
+        "is_active",
+        "fit_group",
+        "gender",
+        "residence",
+        "size",
+    )
     search_fields = ("kit_number", "name")
 
     def get_queryset(self):
         # Annotated rather than counted per row, same reasoning as
         # GarmentViewSet.get_queryset — one query instead of one per kit.
-        return Kit.objects.annotate(item_count=Count("items")).order_by(
-            "school_level", "name"
+        #
+        # `size` is joined because every row prints its name, and ordered on
+        # `size__sort_order` because sizes do not sort as text — S, M, L is
+        # not alphabetical. The cohort fields come before the name so the six
+        # sizes of one kit sit together rather than scattered through the
+        # list by whatever each was called.
+        return (
+            Kit.objects.select_related("size")
+            .annotate(item_count=Count("items"))
+            .order_by(
+                "school_level",
+                "fit_group",
+                "gender",
+                "residence",
+                "size__sort_order",
+                "name",
+            )
         )
 
 
@@ -705,3 +733,130 @@ class CatalogueImportView(APIView):
         return Response(
             CatalogueImportResultSerializer({**tally, "dry_run": dry_run, "detail": detail}).data
         )
+
+
+@extend_schema(
+    tags=["Master data — kits"],
+    summary="Import a kit bill of materials",
+    request={"multipart/form-data": KitImportSerializer},
+    responses={
+        200: KitImportResultSerializer,
+        400: OpenApiResponse(
+            description="The file, or some of its rows, could not be read."
+        ),
+    },
+    description=(
+        "Upload a spreadsheet of uniform kits and the components in them.\n\n"
+        "**Import the garment catalogue first.** Components are matched to "
+        "SKUs that already exist, by number — nothing is created here, so a "
+        "kit sheet read against an empty catalogue reports every line as an "
+        "unknown SKU.\n\n"
+        "**One row per component.** Each row repeats its kit's details, "
+        "which is how the sheet is written; rows are grouped by class band, "
+        "gender, residence and size, and the repeated details are checked "
+        "for agreement rather than taken from whichever row came last.\n\n"
+        "Required columns: `fit_group`, `gender`, `residence`, `size`, "
+        "`component_sku`. Optional: `kit_number`, `kit_name`, `qty` "
+        "(defaults to 1).\n\n"
+        "**The kit number in the file is checked, not used.** It is composed "
+        "from the cohort — `KIT-NUR-B-DAY-XS` — and a file disagreeing with "
+        "what the cohort composes is refused rather than silently "
+        "renumbered.\n\n"
+        "**For a kit named in the file, the file's components replace what "
+        "the kit holds** — a line dropped from the sheet is dropped from the "
+        "kit. Kits not named in the file are untouched.\n\n"
+        "**Nothing is half-imported** and every unreadable row is reported "
+        "with its line number. Send `dry_run=true` first."
+    ),
+)
+class KitImportView(APIView):
+    """`POST /api/catalog/kits/import/` — the Kits screen's import.
+
+    Its own view rather than an action on `KitViewSet`, for the reason
+    `CatalogueImportView` is not an action on `GarmentViewSet`: an import
+    writes kits *and* their components, and may remove components, so
+    hanging it off the kit resource would understate what it does.
+
+    Behind `CanUpdateTables`, like the catalogue import — `MASTER_DATA`
+    lets several roles read kits, and this writes them.
+    """
+
+    permission_classes = [*AUTHENTICATED, CanUpdateTables]
+    serializer_class = KitImportSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        form = KitImportSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        upload = form.validated_data["file"]
+        dry_run = form.validated_data["dry_run"]
+
+        try:
+            tally = kit_importing.import_kits(
+                upload,
+                filename=upload.name or "",
+                sheet=form.validated_data.get("sheet") or None,
+                dry_run=dry_run,
+            )
+        except kit_importing.CatalogueFileError as exc:
+            raise DRFValidationError({"file": [str(exc)]}) from None
+        except kit_importing.RowsRejected as exc:
+            # A plain 400 rather than `DRFValidationError`, which stringifies
+            # recursively and would hand the client "3" where it wants 3.
+            # Same reasoning as the catalogue import; see there.
+            #
+            # Problems and rows are counted separately. One SKU missing from
+            # the catalogue is one problem on 120 rows, and reporting it as
+            # "120 rows could not be read" alongside a single message reads
+            # as though 119 were lost somewhere.
+            problems, rows = len(exc.errors), exc.rows_affected
+            detail = (
+                f"Nothing was imported. {problems} "
+                f"{'problem' if problems == 1 else 'problems'}"
+            )
+            if rows != problems:
+                detail += f", across {rows} rows"
+            return Response(
+                {"detail": detail + ".", "rows": exc.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            KitImportResultSerializer(
+                {**tally, "dry_run": dry_run, "detail": _kit_import_detail(tally, dry_run)}
+            ).data
+        )
+
+
+def _kit_import_detail(tally, dry_run):
+    """One sentence saying what happened, for a screen to show as it is."""
+    if dry_run:
+        return (
+            f"Dry run — nothing was written. {tally['kits']} kits and "
+            f"{tally['components']} components would be created."
+        )
+
+    if tally["kits"] or tally["components"]:
+        detail = (
+            f"Imported {tally['kits']} kits and {tally['components']} components."
+        )
+    else:
+        # A re-import that creates nothing reads as a failure until somebody
+        # says plainly that it means the file is already loaded.
+        detail = (
+            f"Nothing to do — all {tally['unchanged']} kits in that file are "
+            "already in the system."
+        )
+
+    # Said last and said plainly: this is the one thing a kit import does
+    # that the catalogue import never does.
+    if tally["components_removed"]:
+        detail += (
+            f" {tally['components_removed']} components were removed, because "
+            "the file no longer lists them."
+        )
+    if tally["components_changed"]:
+        detail += f" {tally['components_changed']} quantities changed."
+
+    return detail

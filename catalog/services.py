@@ -575,3 +575,33 @@ def kit_prices(kits, on_date=None) -> dict:
         kit.pk: None if kit.pk in unpriceable else totals.get(kit.pk)
         for kit in kits
     }
+
+
+#: The first segment of a generated kit number, as SKU_PREFIX is for a SKU.
+KIT_PREFIX = "KIT"
+
+
+def kit_number(kit) -> str:
+    """The number printed on a kit, composed from the cohort it is cut for.
+
+    Reads `KIT-NUR-B-DAY-XS`: the prefix, the class band, the gender, the
+    residence, and the size. Exactly the shape AsOne use in their 2027
+    workbook, so a kit created here and a kit in their sheet carry the same
+    number without a translation table.
+
+    Every part comes from the kit itself, so nobody types it — the same
+    arrangement as `sku_code()`. A kit that states no cohort cannot be
+    composed this way and keeps whatever number was entered for it; that is
+    the generic starter kit, which predates the cohort fields.
+
+    Non-alphanumerics are stripped from the size for the reason they are in
+    a SKU number: a size whose own name carries a hyphen would make the
+    number look like it had more parts than it does.
+    """
+    if not kit.is_cohort_specific or kit.size is None:
+        return kit.kit_number
+
+    size_token = "".join(c for c in kit.size.name if c.isalnum()).upper()
+    return "-".join(
+        (KIT_PREFIX, kit.fit_group, kit.gender, kit.residence, size_token)
+    )

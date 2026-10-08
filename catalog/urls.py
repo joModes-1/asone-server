@@ -31,6 +31,11 @@ urlpatterns = [
     # and prices as well as garments, so hanging it off one resource would
     # understate what it does.
     path("import/", views.CatalogueImportView.as_view(), name="catalogue-import"),
+    # Before `include(router.urls)`, so "import" is not read as a kit's id.
+    # Its own path rather than an action on the viewset, same reasoning as
+    # the catalogue import above: it writes a kit's components too, and can
+    # remove them.
+    path("kits/import/", views.KitImportView.as_view(), name="kit-import"),
     path("price-lists/", views.PriceListView.as_view(), name="price-list"),
     path("price-lists/gaps/", views.PriceGapView.as_view(), name="price-gaps"),
     # The kit half of F15/F51. Mounted under price-lists/ rather than kits/

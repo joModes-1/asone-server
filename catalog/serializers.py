@@ -12,6 +12,9 @@ DecimalField; it is spelled out here so nobody "fixes" it later.
 import copy
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+
 from config.validators import CaseInsensitiveUniqueValidator
 from rest_framework import serializers
 
@@ -404,6 +407,21 @@ class SkuSerializer(serializers.ModelSerializer):
         source="garment.colour_hex", read_only=True
     )
 
+    # The class band, and whether the size fits any kit. Both are here for
+    # the same reason `garment_school_level` is: so a picker can offer only
+    # what the server will accept.
+    #
+    # The level alone is not enough for a kit. Nursery, P1-P4 and P5-P7 are
+    # all Primary, so a picker filtering on the level offered an Upper
+    # Primary sweater for a Nursery kit and `KitItem.clean()` refused it
+    # after the fact — the screen's mistake presented as the user's.
+    garment_fit_group = serializers.CharField(
+        source="garment.fit_group", read_only=True
+    )
+    size_is_one_size = serializers.BooleanField(
+        source="size.is_one_size", read_only=True
+    )
+
     unit_price = serializers.SerializerMethodField()
 
     class Meta:
@@ -417,8 +435,10 @@ class SkuSerializer(serializers.ModelSerializer):
             "garment_description",
             "garment_colour",
             "garment_colour_hex",
+            "garment_fit_group",
             "size",
             "size_name",
+            "size_is_one_size",
             "description",
             "is_active",
             "unit_price",
@@ -512,16 +532,65 @@ class KitListSerializer(serializers.ListSerializer):
         return super().to_representation(kits)
 
 
+class KitComponentInputSerializer(serializers.Serializer):
+    """One component, as it arrives inside a kit being created.
+
+    Not `KitItemSerializer`: that one takes a `kit`, because it is posted on
+    its own to `/catalog/kit-items/`. Here the kit is the thing being made,
+    so naming it would be circular.
+    """
+
+    sku = serializers.PrimaryKeyRelatedField(queryset=Sku.objects.all())
+    quantity = serializers.IntegerField(min_value=1, default=1)
+
+
 class KitSerializer(serializers.ModelSerializer):
+    # Optional, because a kit that states a cohort has its number composed —
+    # KIT-NUR-B-DAY-XS. Only a general kit, which has nothing to compose
+    # from, needs one typed. `Kit.clean()` enforces that.
     kit_number = serializers.CharField(
         max_length=20,
+        required=False,
+        allow_blank=True,
         validators=[CaseInsensitiveUniqueValidator(queryset=Kit.objects.all())],
     )
     school_level_display = serializers.CharField(
         source="get_school_level_display", read_only=True
     )
+    # Optional together: a kit either states the cohort it is cut for or
+    # states none, and `Kit.clean()` enforces the all-or-nothing. DRF makes a
+    # model ChoiceField required even with blank=True, so these are declared.
+    fit_group = serializers.ChoiceField(
+        choices=Kit.FitGroup.choices, required=False, allow_blank=True
+    )
+    gender = serializers.ChoiceField(
+        choices=Kit.Gender.choices, required=False, allow_blank=True
+    )
+    residence = serializers.ChoiceField(
+        choices=Kit.Residence.choices, required=False, allow_blank=True
+    )
+    school_level = serializers.ChoiceField(
+        choices=Kit.SchoolLevel.choices, required=False, allow_blank=True
+    )
+    fit_group_display = serializers.CharField(
+        source="get_fit_group_display", read_only=True
+    )
+    gender_display = serializers.CharField(source="get_gender_display", read_only=True)
+    residence_display = serializers.CharField(
+        source="get_residence_display", read_only=True
+    )
+    size_name = serializers.CharField(source="size.name", read_only=True, default=None)
     current_price = serializers.SerializerMethodField()
     item_count = serializers.IntegerField(read_only=True)
+    # The kit's components, sent with the kit rather than after it.
+    #
+    # Creating a kit used to be two calls from the screen — POST the kit,
+    # then POST each line — and those can half-succeed. A kit saved with
+    # three of its five components is worse than either outcome: it is in
+    # the catalogue, it can be ordered, and it is wrong. Sent here, the kit
+    # and its lines are one transaction, so a component the model refuses
+    # takes the whole kit down with it and nothing is created.
+    items = KitComponentInputSerializer(many=True, required=False, write_only=True)
 
     class Meta:
         model = Kit
@@ -532,11 +601,148 @@ class KitSerializer(serializers.ModelSerializer):
             "description",
             "school_level",
             "school_level_display",
+            "fit_group",
+            "fit_group_display",
+            "gender",
+            "gender_display",
+            "residence",
+            "residence_display",
+            "size",
+            "size_name",
             "is_active",
             "current_price",
             "item_count",
+            "items",
         )
         list_serializer_class = KitListSerializer
+
+        # DRF builds a UniqueTogetherValidator from `unique_kit_per_cohort_and_size`
+        # and that validator makes every field it covers **required** — so a
+        # general kit, which states no cohort at all, was refused for not
+        # naming a fit group, a gender and a residence.
+        #
+        # The constraint is conditional (`~Q(fit_group="")`); the generated
+        # validator is not, so it asks for more than the database does. The
+        # clash is checked in `validate()` below, where the condition can be
+        # honoured, and the database remains the backstop.
+        validators = []
+
+    def validate(self, attrs):
+        """Refuse a second kit for the same cohort and size.
+
+        What `unique_kit_per_cohort_and_size` says, checked here so it comes
+        back as a 400 naming the clash rather than a 500 from the database —
+        and so the condition is honoured: kits that state no cohort are not
+        compared with one another, because several general kits are not a
+        clash.
+        """
+        def current(name):
+            return attrs.get(name, getattr(self.instance, name, None))
+
+        fit = current("fit_group") or ""
+        if not fit:
+            return attrs
+
+        clash = Kit.objects.filter(
+            fit_group=fit,
+            gender=current("gender") or "",
+            residence=current("residence") or "",
+            size=current("size"),
+        )
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+
+        existing = clash.first()
+        if existing is not None:
+            raise serializers.ValidationError(
+                {
+                    "fit_group": (
+                        f"{existing.kit_number} is already the kit for this "
+                        "class band, gender, residence and size."
+                    )
+                }
+            )
+        return attrs
+
+    def create(self, validated_data):
+        """The kit and its components, or neither.
+
+        One transaction, so a component the model refuses rolls the kit back
+        with it. The screen used to do this in two calls and reported a
+        half-built kit afterwards — "created, but 2 of 5 components were
+        refused" — which left somebody looking at a kit in the catalogue
+        that nobody could order.
+
+        Each line is run through `KitItem.full_clean()`, so the rules that
+        live on the model apply here too: a retired SKU, and a garment that
+        is not on the kit's price list.
+        """
+        components = validated_data.pop("items", [])
+
+        with transaction.atomic():
+            kit = super().create(validated_data)
+            self._write_components(kit, components)
+
+        return kit
+
+    def update(self, instance, validated_data):
+        """Replace the components, where any were sent.
+
+        Absent means "leave them alone" — a PATCH that renames a kit should
+        not empty it. An empty list is a real instruction and does empty it.
+        """
+        components = validated_data.pop("items", None)
+
+        with transaction.atomic():
+            kit = super().update(instance, validated_data)
+            if components is not None:
+                kit.items.all().delete()
+                self._write_components(kit, components)
+
+        return kit
+
+    def _write_components(self, kit, components):
+        errors = {}
+        seen = set()
+
+        for index, component in enumerate(components):
+            sku = component["sku"]
+
+            # Caught here rather than at the database, which would answer
+            # with `unique_sku_per_kit` and a 500. Two rows for one SKU is
+            # somebody meaning a quantity of two.
+            if sku.pk in seen:
+                errors[str(index)] = [
+                    f"{sku.number} is on this kit twice. Put the number "
+                    "wanted in the quantity instead."
+                ]
+                continue
+            seen.add(sku.pk)
+
+            # `.get`, not `[...]`. The field carries `default=1`, and DRF
+            # drops defaults on a partial update — so a PATCH sending a
+            # component without a quantity raised a KeyError and answered
+            # 500 where it should have written a 1.
+            item = KitItem(kit=kit, sku=sku, quantity=component.get("quantity", 1))
+            try:
+                item.full_clean()
+            except DjangoValidationError as exc:
+                errors[str(index)] = [
+                    message
+                    for messages in exc.message_dict.values()
+                    for message in messages
+                ]
+                continue
+            item.save()
+
+        if errors:
+            # Keyed by position, so the screen can mark the line that is
+            # wrong rather than printing a paragraph above the table.
+            #
+            # String keys, because JSON has no others — an integer key would
+            # read back as "1" on the client while `response.data` still
+            # held 1, and a test passing is not the same as a screen working.
+            raise serializers.ValidationError({"items": errors})
 
     def get_current_price(self, obj) -> str | None:
         """Today's kit price, or null where it cannot be priced.
@@ -603,6 +809,45 @@ class CatalogueImportSerializer(serializers.Serializer):
             "back. Nothing is written."
         ),
     )
+
+
+class KitImportSerializer(serializers.Serializer):
+    """The upload behind `POST /api/catalog/kits/import/`."""
+
+    file = serializers.FileField(
+        help_text="The kit bill of materials as .xlsx, .xlsm or .csv."
+    )
+    sheet = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Which worksheet to read. Defaults to the first one.",
+    )
+    dry_run = serializers.BooleanField(
+        default=False,
+        help_text=(
+            "Check the file and report what would be imported, then roll it "
+            "back. Nothing is written."
+        ),
+    )
+
+
+class KitImportResultSerializer(serializers.Serializer):
+    """What a kit import did, or would have done.
+
+    `components_removed` is reported separately and prominently because it
+    is the one thing this import does that the catalogue import never does:
+    a component dropped from the file is dropped from the kit. A bill of
+    materials is a recipe, so the file is authoritative for the kits it
+    names — but somebody should be told how many lines that cost.
+    """
+
+    kits = serializers.IntegerField()
+    unchanged = serializers.IntegerField()
+    components = serializers.IntegerField()
+    components_changed = serializers.IntegerField()
+    components_removed = serializers.IntegerField()
+    dry_run = serializers.BooleanField()
+    detail = serializers.CharField()
 
 
 class CatalogueImportResultSerializer(serializers.Serializer):

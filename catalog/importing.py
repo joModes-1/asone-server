@@ -89,10 +89,16 @@ class RowsRejected(Exception):
     spreadsheet one error per run is miserable when there are thirty.
     """
 
-    def __init__(self, errors):
+    def __init__(self, errors, *, rows_affected=None):
         #: ``[{"line": 4, "message": "no sizes — ..."}, ...]``
         self.errors = errors
-        super().__init__(f"{len(errors)} rows could not be read.")
+        #: How many rows these problems cover, where one problem can cover
+        #: many. The kit import groups a missing SKU into one message rather
+        #: than repeating it for each of the 120 kits using it, so the count
+        #: of problems and the count of bad rows stop being the same number
+        #: — and "120 rows could not be read" is the true one to report.
+        self.rows_affected = len(errors) if rows_affected is None else rows_affected
+        super().__init__(f"{self.rows_affected} rows could not be read.")
 
 
 class _DryRun(Exception):
@@ -135,7 +141,7 @@ def _key(name):
     return COLUMN_ALIASES.get(key, key)
 
 
-def read_rows(source, *, filename, sheet=None):
+def read_rows(source, *, filename, sheet=None, required=None, known=None):
     """Rows paired with their line number, so an error can name the line.
 
     ``source`` is a path or an open binary file — an upload never touches
@@ -143,7 +149,15 @@ def read_rows(source, *, filename, sheet=None):
     from the object.
 
     Excel and CSV both end up as dicts keyed by lower-cased column name.
+
+    ``required`` and ``known`` describe the shape being read, and default to
+    the garment catalogue's. The kit bill of materials is a different
+    spreadsheet with different columns and the same rules about how a file
+    is opened, so it passes its own — see `catalog/kit_importing.py`.
     """
+    required = REQUIRED_COLUMNS if required is None else required
+    known = KNOWN_COLUMNS if known is None else known
+
     suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
     if suffix in {".xlsx", ".xlsm"}:
@@ -159,12 +173,12 @@ def read_rows(source, *, filename, sheet=None):
     if not rows:
         raise CatalogueFileError("That file has no data rows.")
 
-    missing = REQUIRED_COLUMNS - set(rows[0][1])
+    missing = set(required) - set(rows[0][1])
     if missing:
         raise CatalogueFileError(
             "That file is missing columns: "
             + ", ".join(sorted(missing))
-            + f".\nExpected: {KNOWN_COLUMNS}"
+            + f".\nExpected: {known}"
         )
     return rows
 

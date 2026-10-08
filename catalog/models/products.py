@@ -381,6 +381,18 @@ class Garment(models.Model):
         """Whether this garment belongs on the PS or HS price list."""
         return self.school_level in (level, self.SchoolLevel.BOTH)
 
+    def fits_class_band(self, band) -> bool:
+        """Whether this garment is cut for `band` — a `Kit.FitGroup` value.
+
+        `ALL` fits every band: socks and neckties are the same garment
+        whichever class wears them, which is exactly why `Garment.FitGroup`
+        carries an ALL and `Kit.FitGroup` does not.
+
+        A garment with no band stated fits any kit. Those predate the field
+        and refusing them would make old kits unmaintainable.
+        """
+        return not self.fit_group or self.fit_group in (band, self.FitGroup.ALL)
+
 
 class Size(models.Model):
     """A garment attribute, shared across garments so "M" means one thing.
