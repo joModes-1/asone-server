@@ -236,6 +236,39 @@ class ReconciliationTests(TestCase):
         self.assertEqual(row["ordered"], 500)
         self.assertEqual(row["difference"], 0)
 
+    def test_a_garment_not_on_the_group_order_still_shows(self):
+        """Reported, not hidden and not refused.
+
+        A warehouse may ask a Tailoring Center for something the group order
+        does not list — the requirement is a plan, and plans get added to.
+        Leaving it out of this table would lose it between two documents:
+        it is on no group order, so no group order screen would show it.
+
+        It arrives as `requested=0`, which is why the screen tags the row
+        "Not on this requirement" — a row reading `requested 0, ordered 50`
+        under the group order's heading otherwise reads as though the
+        garment had been added to the order, and it has not. The group
+        order's own lines are untouched.
+        """
+        other = make_priced_sku("Grey Trousers", "12")
+        create_production_order(
+            created_by=self.lead,
+            lines=[{"sku": other, "quantity": 50}],
+            order_date=ORDER_DATE,
+            tailoring_center=self.tc,
+            warehouse=self.sites["namayemba"],
+            group_order=self.group,
+        )
+
+        rows = {row["sku"].number: row for row in reconcile(self.group)}
+
+        self.assertIn(other.number, rows)
+        self.assertEqual(rows[other.number]["requested"], 0)
+        self.assertEqual(rows[other.number]["ordered"], 50)
+        self.assertEqual(rows[other.number]["difference"], 50)
+        # The group order itself has not grown.
+        self.assertEqual(self.group.lines.count(), 1)
+
     def test_cancelled_orders_do_not_count_towards_the_requirement(self):
         """Otherwise the requirement looks covered by goods nobody is making."""
         self.place(500, status=OrderStatus.CANCELLED)
