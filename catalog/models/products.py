@@ -358,6 +358,21 @@ class Garment(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
+        """The name somebody picks from, and it has to tell two garments apart.
+
+        This read `Sweater (PS)` — the price list — which stopped
+        distinguishing anything the moment class bands arrived. AsOne have
+        Sweater at Nursery, Lower Primary and Upper Primary, all three on the
+        Primary list, so a production-order picker offered three identical
+        lines and the person choosing had no way to tell which was which.
+        Reported as "repeated garment/SKU records"; they were not repeats.
+
+        The band is the finer answer and implies the price list anyway, so it
+        replaces it where there is one. Garments with no band keep the old
+        form, which is still the best available for them.
+        """
+        if self.fit_group:
+            return f"{self.name} ({self.get_fit_group_display()})"
         if self.school_level == self.SchoolLevel.BOTH:
             return self.name
         return f"{self.name} ({self.school_level})"
