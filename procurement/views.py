@@ -47,6 +47,7 @@ from .serializers import (
     GroupOrderTotalSerializer,
     GroupOrderSerializer,
     OrderAmendSerializer,
+    ProductionOrderAmendSerializer,
     OutstandingRowSerializer,
     ReceiptCostedSerializer,
     ReceiptSerializer,
@@ -102,9 +103,15 @@ class OrderViewSetMixin:
         """Amend the header. Lines are F18 and are not editable yet."""
         order = self.get_object()
 
+        # `get_serializer_class()`, not `OrderAmendSerializer` by name — a
+        # production order takes one more field than a group order (the link
+        # to its group order), and hardcoding the base class here meant the
+        # subclass was declared, returned by `get_serializer_class`, and then
+        # quietly ignored on the one code path that uses it.
+        #
         # The order goes in the context so the serializer can refuse to
         # cancel one that goods have already arrived against.
-        serializer = OrderAmendSerializer(
+        serializer = self.get_serializer_class()(
             data=request.data, context={"order": order}
         )
         serializer.is_valid(raise_exception=True)
@@ -217,7 +224,7 @@ class ProductionOrderViewSet(OrderViewSetMixin, viewsets.ModelViewSet):
         if self.action == "create":
             return ProductionOrderWriteSerializer
         if self.action == "partial_update":
-            return OrderAmendSerializer
+            return ProductionOrderAmendSerializer
         return ProductionOrderSerializer
 
     @extend_schema(

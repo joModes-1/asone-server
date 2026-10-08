@@ -389,6 +389,74 @@ class ReconciliationApiTests(ProcurementSetup):
         self.assertEqual(row["ordered"], 300)
         self.assertEqual(row["difference"], -200)
 
+    def test_an_unlinked_production_order_leaves_the_requirement_untouched(self):
+        """The symptom that sent somebody looking for a bug in the sum.
+
+        A production order with no `group_order` is a standalone document —
+        a reorder, an emergency order — and must not count against anybody's
+        requirement. That is right, and it is also exactly what a *missed*
+        link looks like: order 200 of the 1,000 skirts, and the shortfall
+        still reads 1,000. Nothing here can tell the two apart, which is why
+        the create form has to ask for the link rather than leave it out.
+        """
+        self.client.post(
+            reverse("procurement:production-order-list"),
+            self.production_payload(),
+            format="json",
+        )
+
+        response = self.client.get(
+            reverse("procurement:group-order-reconciliation", args=[self.group["id"]])
+        )
+
+        row = response.data[0]
+        self.assertEqual(row["ordered"], 300, "only the linked order counts")
+        self.assertEqual(row["difference"], -200)
+
+    def test_an_order_can_be_attached_to_a_group_order_afterwards(self):
+        """The repair path, and the reason it exists.
+
+        The create form did not ask for the link for a while, so there are
+        real production orders — on live — that break down a group order and
+        do not say so. Cancelling one and raising it again is not a fair
+        answer: it funds a Tailoring Center, so the document has to survive.
+        """
+        standalone = self.client.post(
+            reverse("procurement:production-order-list"),
+            self.production_payload(),
+            format="json",
+        ).data
+
+        response = self.client.patch(
+            reverse("procurement:production-order-detail", args=[standalone["id"]]),
+            {"group_order": self.group["id"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = self.client.get(
+            reverse("procurement:group-order-reconciliation", args=[self.group["id"]])
+        ).data
+        self.assertEqual(rows[0]["ordered"], 600, "both orders now count")
+
+    def test_a_wrong_link_can_be_undone(self):
+        attached = self.client.post(
+            reverse("procurement:production-order-list"),
+            self.production_payload(group_order=self.group["id"]),
+            format="json",
+        ).data
+
+        self.client.patch(
+            reverse("procurement:production-order-detail", args=[attached["id"]]),
+            {"group_order": None},
+            format="json",
+        )
+
+        rows = self.client.get(
+            reverse("procurement:group-order-reconciliation", args=[self.group["id"]])
+        ).data
+        self.assertEqual(rows[0]["ordered"], 300)
+
     def test_finance_may_read_it(self):
         self.as_role(Role.FINANCE)
         response = self.client.get(

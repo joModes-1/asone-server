@@ -289,11 +289,14 @@ class OrderAmendSerializer(serializers.Serializer):
     due_in_warehouse_date = serializers.DateField(required=False, allow_null=True)
     notes = serializers.CharField(required=False, allow_blank=True)
 
+    #: Named in the "nothing to change" message. Overridden by the subclass
+    #: below, so the message cannot list a field the serializer does not take.
+    amendable = "status, due_in_warehouse_date, notes"
+
     def validate(self, attrs):
         if not attrs:
             raise serializers.ValidationError(
-                "Nothing to change. Amendable fields: status, "
-                "due_in_warehouse_date, notes."
+                f"Nothing to change. Amendable fields: {self.amendable}."
             )
 
         # `quantity_received` is a production-order property; this serializer
@@ -322,6 +325,35 @@ class OrderAmendSerializer(serializers.Serializer):
 # Receipts
 # ---------------------------------------------------------------------------
 
+
+
+class ProductionOrderAmendSerializer(OrderAmendSerializer):
+    """`OrderAmendSerializer`, plus the group order link.
+
+    Attaching after the fact matters more than it looks. The link is what
+    makes a group order mean anything — `reconcile()` counts the production
+    orders pointing at it — and a production order raised without one leaves
+    the requirement reading as wholly unmet. The create form did not ask for
+    it for a while, so there are real orders out there that need attaching,
+    and the alternative was cancelling a document that funds a Tailoring
+    Center and raising it again.
+
+    Nullable, so a wrong link can be undone. Nothing downstream depends on
+    it: receipts point at the production order, not at the group order, so
+    moving the link moves a report and nothing else.
+
+    Not on `OrderAmendSerializer` itself, because that one also serves group
+    orders, and a group order has no group order.
+    """
+
+    group_order = serializers.PrimaryKeyRelatedField(
+        queryset=GroupOrder.objects.all(),
+        required=False,
+        allow_null=True,
+        help_text="The group order this breaks down. Null detaches it.",
+    )
+
+    amendable = "status, due_in_warehouse_date, notes, group_order"
 
 class ReceiptLineSerializer(serializers.ModelSerializer):
     """A receipt line, reading. `discrepancy` is the whole point of F20."""
